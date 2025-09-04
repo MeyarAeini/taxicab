@@ -1,6 +1,6 @@
-mod passenger;
+mod client;
 mod server;
-mod trip;
+mod taxicab_connection;
 
-pub use passenger::PassengerHandler;
+pub use client::{TaxicabClient, XiClient};
 pub use server::run;

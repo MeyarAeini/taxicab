@@ -1,17 +1,19 @@
 use std::error::Error;
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
 };
 
-pub struct Trip {
-    stream: TcpStream,
+pub struct TaxicabConnection {
+    reader: ReadHalf<TcpStream>,
+    writer: WriteHalf<TcpStream>,
 }
 
-impl Trip {
+impl TaxicabConnection {
     pub fn new(stream: TcpStream) -> Self {
-        Self { stream }
+        let (reader, writer) = tokio::io::split(stream);
+        Self { reader, writer }
     }
 
     pub async fn write(&mut self, message: &str) -> Result<(), Box<dyn Error>> {
@@ -20,14 +22,14 @@ impl Trip {
         let bytes = message.as_bytes();
 
         println!("writing {:#?}", bytes);
-        self.stream.write(bytes).await?;
+        self.writer.write(bytes).await?;
         Ok(())
     }
 
     pub async fn read(&mut self) -> Result<String, Box<dyn Error>> {
         let mut buffer = [0; 1024];
 
-        let n = self.stream.read(&mut buffer).await?;
+        let n = self.reader.read(&mut buffer).await?;
 
         if n == 0 {
             println!("connection closed by client");
