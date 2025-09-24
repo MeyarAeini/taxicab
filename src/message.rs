@@ -1,11 +1,9 @@
-use std::u8;
+use bincode::{Decode, Encode, config, error::DecodeError};
 
-use bincode::{config, error::DecodeError, Decode, Encode};
-use tokio::net::TcpStream;
 #[derive(Encode, Decode, Debug)]
 pub struct Message {
     pub(crate) header: MessageHeader,
-    body: String,
+    pub body: String,
 }
 
 #[derive(Encode, Decode, Debug)]
