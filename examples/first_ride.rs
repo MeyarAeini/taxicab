@@ -6,10 +6,15 @@ use taxicab::TaxicabClient;
 async fn main() -> Result<(), Box<dyn Error>> {
     //let client = TaxicabClient::connect("127.0.0.1:1729", handle).await?;
     //
-    let client = taxicab::XiClient::connect("127.0.0.1:1729").await?;
+    let (client, mut message_receiver) = taxicab::XiClient::connect("127.0.0.1:1729").await?;
 
     println!("connected to the server");
 
+    tokio::spawn(async move {
+        while let Some(message) = message_receiver.recv().await {
+            println!("a new message received {:#?}", message);
+        }
+    });
     for i in 0..5 {
         println!("sending {}", i);
         client.send("take me home, please!").await?;

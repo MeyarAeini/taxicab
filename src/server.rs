@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf},
     net::{TcpListener, TcpStream},
     sync::mpsc::{self, UnboundedSender},
 };
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use futures::SinkExt;
+use tokio_stream::StreamExt;
+
+use crate::{Message, message};
 
 //use crate::taxicab_connection::TaxicabConnection;
 
 pub struct Taxicab {
     listener: TcpListener,
-    senders: HashMap<String, UnboundedSender<String>>,
 }
 
 struct TaxicabHandler {
@@ -21,24 +25,21 @@ struct TaxicabHandler {
 enum ServerCommand {
     NewClient {
         addr: String,
-        sender: UnboundedSender<String>,
+        sender: UnboundedSender<Message>,
     },
     MessageReceived {
-        message: String,
+        message: Vec<u8>,
         from_addr: String,
     },
     SendMessage {
-        message: String,
+        message: Message,
         to_addr: String,
     },
 }
 
 impl Taxicab {
     pub fn new(listener: TcpListener) -> Self {
-        Self {
-            listener,
-            senders: HashMap::new(),
-        }
+        Self { listener }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
@@ -55,7 +56,7 @@ impl Taxicab {
                     }
 
                     ServerCommand::SendMessage { message, to_addr } => {
-                        println!("running command , SendMessage({},{})", message, to_addr);
+                        println!("running command , SendMessage({:#?},{})", message, to_addr);
 
                         if let Some(sender) = endpoints.get(&to_addr.to_string()) {
                             let _ = sender.send(message);
@@ -64,18 +65,26 @@ impl Taxicab {
 
                     ServerCommand::MessageReceived { message, from_addr } => {
                         println!(
-                            "running command, MessageReceived({},{})",
+                            "running command, MessageReceived({:#?},{})",
                             message, from_addr
                         );
 
-                        let message = ServerCommand::SendMessage {
-                            message: format!(
-                                "I received your message. Message : {}. Here is your address if you did not know: {}",
-                                message, from_addr
-                            ),
-                            to_addr: from_addr,
-                        };
-                        let _ = tx_handler.clone().send(message);
+                        match Message::from_bytes(message.as_slice()) {
+                            Ok(message) => {
+                                let message = Message::new(message.header.exchange.clone(), format!(
+                                        "I received your message. Message : {:#?}. Here is your address if you did not know: {}",
+                                        message, from_addr
+                                    ));
+
+                                let message = ServerCommand::SendMessage {
+                                    message,                                     to_addr: from_addr,
+                                };
+                                let _ = tx_handler.clone().send(message);
+                            }
+                            Err(e) => {
+                                println!("{:#?}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -99,28 +108,25 @@ impl Taxicab {
     ) {
         println!("a new passenger hailed, this is the address : {}", addr);
 
-        let (reader, mut writer) = tokio::io::split(socket);
+        //let (mut reader, mut writer) = tokio::io::split(socket);
+        let mut framed_socket = Framed::new(socket, LengthDelimitedCodec::new());
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
         if let Ok(_) = command_sender.send(ServerCommand::NewClient {
             addr: addr.to_string(),
             sender: tx,
         }) {
-            let mut reader = BufReader::new(reader).lines();
+            //let mut reader = BufReader::new(reader).lines();
             loop {
+                //let mut buffer = [0u8; 2048];
                 tokio::select! {
                     //println!("waiting for message from {}", addr.to_string());
-                   Ok(Some( line ))= reader.next_line() => {
-                        //TODO : deserialize the message and put it in a proper queue
-                        println!(
-                            "A new message received from {} \n {}",
-                            addr.to_string(),
-                            line
-                        );
+                   Some(Ok(bytes))= framed_socket.next() => {
 
+                       //let bytes : Vec<u8>= buffer[..n].to_owned();
                         if let Ok(_) = command_sender.send(ServerCommand::MessageReceived {
-                            message: line,
+                            message: bytes.to_vec(),
                             from_addr: addr.to_string(),
                         }) {}
 
@@ -132,9 +138,10 @@ impl Taxicab {
                     }
 
                     Some(message) = rx.recv() => {
-                        if !writer.write_all(message.as_bytes()).await.is_err() {
-                            let _ = writer.write_all(b"\n").await;
-                        }
+                        let _ = framed_socket.send(message.to_bytes().into()).await;
+                        //if !writer.write_all(message.to_bytes().as_slice()).await.is_err() {
+                        //    let _ = writer.write_all(b"\n").await;
+                        //}
                     }
                 };
             }

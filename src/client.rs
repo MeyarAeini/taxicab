@@ -1,10 +1,14 @@
+use futures::{SinkExt, StreamExt};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, WriteHalf},
     join,
     net::TcpStream,
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+use crate::Message;
 
 pub struct TaxicabAddr {
     addr: String,
@@ -17,8 +21,8 @@ pub struct TaxicabClient {
 }
 
 enum ClientCommand {
-    MessageReceived(String),
-    SendMessage(String),
+    MessageReceived(Message),
+    SendMessage(Message),
 }
 
 pub struct XiClient {
@@ -27,7 +31,8 @@ pub struct XiClient {
 
 impl XiClient {
     fn command_processor(
-        message_sender: UnboundedSender<String>,
+        message_sender: UnboundedSender<Message>,
+        message_receiver: UnboundedSender<Message>,
     ) -> UnboundedSender<ClientCommand> {
         let (tx, mut rx) = mpsc::unbounded_channel::<ClientCommand>();
 
@@ -37,11 +42,12 @@ impl XiClient {
             while let Some(command) = rx.recv().await {
                 match command {
                     ClientCommand::SendMessage(message) => {
-                        println!("sending ... {}", message);
+                        println!("sending ... {:#?}", message);
                         let _ = message_sender.send(message);
                     }
                     ClientCommand::MessageReceived(message) => {
-                        println!("new message received: {}", message);
+                        println!("new message received: {:#?}", message);
+                        let _ = message_receiver.send(message);
                     }
                 }
             }
@@ -50,42 +56,60 @@ impl XiClient {
         sender
     }
 
-    pub async fn connect(addr: &str) -> anyhow::Result<Self> {
+    pub async fn connect(addr: &str) -> anyhow::Result<(Self, UnboundedReceiver<Message>)> {
         let stream = TcpStream::connect(addr).await?;
 
-        let (reader, mut writer) = tokio::io::split(stream);
+        let mut framed_socket = Framed::new(stream, LengthDelimitedCodec::new());
+        //let (mut reader, mut writer) = tokio::io::split(stream);
 
-        let mut reader = BufReader::new(reader).lines();
+        //let mut reader = BufReader::new(reader).lines();
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
-        let command_sender = Self::command_processor(tx.clone());
+        let (tx_receiver, mut rx_receiver) = mpsc::unbounded_channel::<Message>();
+
+        let command_sender = Self::command_processor(tx.clone(), tx_receiver);
 
         let command_sender_copy = command_sender.clone();
         tokio::spawn(async move {
             loop {
+               // let mut buffer = [0u8; 2048];
                 tokio::select! {
 
-                    Ok(Some(line)) = reader.next_line() => {
-                        let _ = command_sender.send(ClientCommand::MessageReceived(line));
+                    Some(Ok(bytes)) = framed_socket.next() => {
+                        match Message::from_bytes(&bytes[..]) {
+                            Ok(message) => {
+                        let _ = command_sender.send(ClientCommand::MessageReceived(message));
+                            },
+                            Err(e) => {
+                                println!("{:#?}", e);
+                            }
+                        }
                     }
 
+                    //Ok(Some(line)) = reader.next_line() => {
+                    //    let _ = command_sender.send(ClientCommand::MessageReceived(line));
+                    //}
+
                     Some(message) = rx.recv() => {
-                        if !writer.write_all(message.as_bytes()).await.is_err() {
-                            let _ = writer.write_all(b"\n").await;
+                        if let Err(e) =framed_socket.send(message.to_bytes().into()).await {
+                            println!("an error happend on sending a message. {:#?}", e);
                         }
                     }
                 }
             }
         });
 
-        Ok(Self {
-            sender: command_sender_copy,
-        })
+        Ok((
+            Self {
+                sender: command_sender_copy,
+            },
+            rx_receiver,
+        ))
     }
     pub async fn send(&self, message: &str) -> anyhow::Result<()> {
-        self.sender
-            .send(ClientCommand::SendMessage(message.to_string()));
+        let message = Message::new("some-exchange".to_string(), message.to_string());
+        self.sender.send(ClientCommand::SendMessage(message))?;
 
         Ok(())
     }
