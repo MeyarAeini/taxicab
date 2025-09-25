@@ -10,6 +10,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info};
 
+///The taxicab server state.
 #[derive(Debug)]
 pub struct Taxicab {
     listener: TcpListener,
@@ -31,9 +32,15 @@ enum ServerCommand {
 }
 
 impl Taxicab {
+    ///Create a new taxicab server instance by the given TcpListener
     pub fn new(listener: TcpListener) -> Self {
         Self { listener }
     }
+
+    ///Run the taxicab server instance
+    ///
+    ///This method is instrumented by the `tracing` crate.
+    ///
     #[tracing::instrument]
     pub async fn run(&mut self) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel::<ServerCommand>();
@@ -115,12 +122,6 @@ impl Taxicab {
                             message: bytes.to_vec(),
                             from_addr: addr.to_string(),
                         }) {}
-
-                        //the queue engine here receives a new message , it also should be conscious
-                        //about dispatchining the message to the destination address using self.senders
-                        //A message should have a property which define the queue that this message
-                        //should be put it. message from different type still can go the same queue, no
-                        //limitation on this
                     }
 
                     Some(message) = rx.recv() => {
@@ -132,6 +133,34 @@ impl Taxicab {
     }
 }
 
+///run a taxicab server insatnce by the given TcpListener.
+///
+///```rust 
+///use std::error::Error;
+///use taxicab::run;
+///use tokio::net::TcpListener;
+///use tracing::Level;
+///use tracing_subscriber::FmtSubscriber;
+///
+///#[tokio::main]
+///async fn main() -> Result<(), Box<dyn Error>> {
+///    // a builder for `FmtSubscriber`.
+///    let subscriber = FmtSubscriber::builder()
+///        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
+///        // will be written to stdout.
+///        .with_max_level(Level::TRACE)
+///        // completes the builder.
+///        .finish();
+///
+///    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+///
+///    let listener = TcpListener::bind("127.0.0.1:1729").await?;
+///    run(listener).await;
+///
+///    Ok(())
+///}
+///```
+///
 pub async fn run(listener: TcpListener) {
     let _ = Taxicab::new(listener).run().await;
 }
