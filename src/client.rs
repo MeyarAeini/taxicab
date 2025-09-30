@@ -5,7 +5,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::Message;
+use crate::{Message, message};
 use tracing::{debug, error};
 
 enum ClientCommand {
@@ -23,7 +23,6 @@ pub struct TaxicabClient {
 }
 
 impl TaxicabClient {
-
     ///taxicab internal command processor
     ///
     ///it get two sender channeld for receiving and sending Message and returns the Command sender
@@ -40,12 +39,12 @@ impl TaxicabClient {
             while let Some(command) = rx.recv().await {
                 match command {
                     ClientCommand::SendMessage(message) => {
-                        debug!(Message = message.body, " Sending a message to the server");
+                        //debug!(Message = message, " Sending a message to the server");
                         let _ = message_sender.send(message);
                     }
                     ClientCommand::MessageReceived(message) => {
                         debug!(
-                            Message = message.body,
+                            //   Message = message,
                             "A new message received from the server"
                         );
                         let _ = message_receiver.send(message);
@@ -127,8 +126,17 @@ impl TaxicabClient {
     ///
     ///This method uses the taxicab internal Command channel to pass the message to the taxicab tcp
     ///stream.
-    pub async fn send(&self, message: &str) -> anyhow::Result<()> {
-        let message = Message::new("some-exchange".to_string(), message.to_string());
+    pub async fn send(&self, message: &str, exchange: &str) -> anyhow::Result<()> {
+        let message = Message::new_command(exchange.to_string(), message.to_string());
+        self.sender.send(ClientCommand::SendMessage(message))?;
+
+        Ok(())
+    }
+
+    ///Send a `Binding` request to the server
+    pub async fn bind(&self, exchange: &str) -> anyhow::Result<()> {
+        let message = Message::Binding(exchange.to_string());
+
         self.sender.send(ClientCommand::SendMessage(message))?;
 
         Ok(())

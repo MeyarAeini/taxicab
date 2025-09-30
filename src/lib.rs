@@ -8,6 +8,7 @@
 mod client;
 mod message;
 mod server;
+mod state;
 
 ///
 ///The client struct.

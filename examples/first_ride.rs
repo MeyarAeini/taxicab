@@ -22,11 +22,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         while let Some(message) = message_receiver.recv().await {
-            info!(Message = format!("{:#?}", message.body), "Message received");
+            match message {
+                taxicab::Message::Request(message) => {
+                    info!(Message = message.content(), "Message received");
+                }
+                _ => {}
+            }
         }
     });
+
+    let exchange = "some-exchange";
+
+    client.bind(exchange).await?;
+
     for _i in 0..5 {
-        client.send("take me home, please!").await?;
+        client.send("take me home, please!", exchange).await?;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
     }

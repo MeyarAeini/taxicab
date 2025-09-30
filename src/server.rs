@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-
-use crate::Message;
+use crate::{Message, state::Db};
 use futures::SinkExt;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -14,6 +12,7 @@ use tracing::{debug, error, info};
 #[derive(Debug)]
 pub struct Taxicab {
     listener: TcpListener,
+    db: Db,
 }
 
 enum ServerCommand {
@@ -34,7 +33,10 @@ enum ServerCommand {
 impl Taxicab {
     ///Create a new taxicab server instance by the given TcpListener
     pub fn new(listener: TcpListener) -> Self {
-        Self { listener }
+        Self {
+            listener,
+            db: Db::new(),
+        }
     }
 
     ///Run the taxicab server instance
@@ -46,45 +48,24 @@ impl Taxicab {
         let (tx, mut rx) = mpsc::unbounded_channel::<ServerCommand>();
 
         let tx_handler = tx.clone();
+        let mut db = self.db.instance();
         tokio::spawn(async move {
-            let mut endpoints = HashMap::new();
             while let Some(command) = rx.recv().await {
                 match command {
                     ServerCommand::NewClient { addr, sender } => {
                         debug!(Address = addr, "A new client is connected to the server");
-                        endpoints.insert(addr.to_string(), sender);
+                        db.keep_endpoint_in_loop(addr.to_string(), sender);
                     }
 
                     ServerCommand::SendMessage { message, to_addr } => {
                         debug!(Address = to_addr, "Dispatching a message to a client");
-                        if let Some(sender) = endpoints.get(&to_addr.to_string()) {
-                            let _ = sender.send(message);
+                        if let Err(_e) = db.forward_message_to(message, &to_addr) {
+                            //error log;
                         }
                     }
 
                     ServerCommand::MessageReceived { message, from_addr } => {
-                        debug!(Address = from_addr, "A new message received from a client");
-
-                        match Message::from_bytes(message.as_slice()) {
-                            Ok(message) => {
-                                let message = Message::new(
-                                    message.header.exchange.clone(),
-                                    format!(
-                                        "I received your message. Message : {}. Here is your address if you did not know: {}",
-                                        message.body, from_addr
-                                    ),
-                                );
-
-                                let message = ServerCommand::SendMessage {
-                                    message,
-                                    to_addr: from_addr,
-                                };
-                                let _ = tx_handler.clone().send(message);
-                            }
-                            Err(_e) => {
-                                error!("Failed to create a `Message` from the given bytes");
-                            }
-                        }
+                        Self::on_message_received(message, from_addr, &mut db, tx_handler.clone());
                     }
                 }
             }
@@ -101,6 +82,46 @@ impl Taxicab {
             }
         }
     }
+
+    fn on_message_received(
+        message: Vec<u8>,
+        from_addr: String,
+        db: &mut Db,
+        tx_handler: UnboundedSender<ServerCommand>,
+    ) {
+        debug!(Address = from_addr, "A new message received from a client");
+
+        let bytes = message.clone();
+        match Message::from_bytes(message.as_slice()) {
+            Ok(message) => match message {
+                Message::Act(_) => {}
+                Message::Binding(exchange) => {
+                    db.bind(&exchange, from_addr);
+                }
+                Message::Request(message) => {
+                    db.enqueue(message.exchange(), bytes);
+                    let message = Message::new_command(
+                        message.exchange().to_string(),
+                        format!(
+                            "I received your message. Message : {}. Here is your address if you did not know: {}",
+                            message.content(),
+                            from_addr
+                        ),
+                    );
+
+                    let message = ServerCommand::SendMessage {
+                        message,
+                        to_addr: from_addr,
+                    };
+                    let _ = tx_handler.clone().send(message);
+                }
+            },
+            Err(_e) => {
+                error!("Failed to create a `Message` from the given bytes");
+            }
+        }
+    }
+
     async fn handle_socket(
         socket: TcpStream,
         addr: String,
