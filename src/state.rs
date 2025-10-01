@@ -1,19 +1,27 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::info;
 
 use crate::Message;
 
 type MessageSender = UnboundedSender<Message>;
 type MessageValue = Vec<u8>;
+pub(crate) type DbEventListener = UnboundedReceiver<DbEvent>;
+pub(crate) type DbExchangeListener = (String, DbEventListener);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Db {
     state: Arc<Mutex<State>>,
+    event_sender: UnboundedSender<DbExchangeListener>,
+    event_senders: HashMap<String, UnboundedSender<DbEvent>>,
+}
+
+pub(crate) enum DbEvent {
+    NewMessage(String),
 }
 
 #[derive(Debug)]
@@ -24,14 +32,20 @@ struct State {
 }
 
 impl Db {
-    pub fn new() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(State {
-                endpoints: HashMap::new(),
-                exchanges: HashMap::new(),
-                bindings: HashMap::new(),
-            })),
-        }
+    pub fn new() -> (Self, UnboundedReceiver<DbExchangeListener>) {
+        let (tx, rx) = mpsc::unbounded_channel::<DbExchangeListener>();
+        (
+            Self {
+                state: Arc::new(Mutex::new(State {
+                    endpoints: HashMap::new(),
+                    exchanges: HashMap::new(),
+                    bindings: HashMap::new(),
+                })),
+                event_sender: tx,
+                event_senders: HashMap::new(),
+            },
+            rx,
+        )
     }
 
     pub fn instance(&self) -> Self {
@@ -57,12 +71,20 @@ impl Db {
     pub fn enqueue(&mut self, exchange: &str, message: MessageValue) {
         let mut state = self.state.lock().unwrap();
 
+        if !state.exchanges.contains_key(exchange) {
+            let (tx, rx) = mpsc::unbounded_channel::<DbEvent>();
+            let _ = self.event_sender.send((exchange.to_string(), rx));
+            self.event_senders.insert(exchange.to_string(), tx);
+        }
+
         let queue = state
             .exchanges
             .entry(exchange.to_string())
             .or_insert(VecDeque::new());
 
         queue.push_back(message);
+
+        self.send_event(exchange, DbEvent::NewMessage(exchange.to_string()));
 
         info!(
             exchange = exchange,
@@ -71,13 +93,22 @@ impl Db {
         );
     }
 
+    pub fn dequeue(&mut self, exchange: &str) -> Option<MessageValue> {
+        let mut state = self.state.lock().unwrap();
+
+        if let Some(queue) = state.exchanges.get_mut(exchange) {
+            queue.pop_front()
+        } else {
+            None
+        }
+    }
+
     pub fn bind(&mut self, exchange: &str, endpoint: String) {
         let mut state = self.state.lock().unwrap();
 
-        let binding = state
-            .bindings
-            .entry(exchange.to_string())
-            .or_insert(HashSet::new());
+        let entry = state.bindings.entry(exchange.to_string());
+
+        let binding = entry.or_insert(HashSet::new());
 
         binding.insert(endpoint.to_string());
 
@@ -97,5 +128,11 @@ impl Db {
             .map(|set| set.clone().into_iter())
             .into_iter()
             .flatten()
+    }
+
+    fn send_event(&self, exchange: &str, event: DbEvent) {
+        if let Some(event_sender) = self.event_senders.get(exchange) {
+            event_sender.send(event);
+        }
     }
 }

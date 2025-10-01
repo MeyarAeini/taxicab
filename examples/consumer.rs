@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
 use taxicab::TaxicabClient;
 use tracing::{Level, info};
@@ -33,16 +33,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let exchange = "some-exchange";
 
-    //do not bind , allow consume.rs to do this as a consumer of the message send by this client
-    //client.bind(exchange).await?;
+    client.bind(exchange).await?;
 
-    for _i in 0..5 {
-        client.send("take me home, please!", exchange).await?;
-
-        info!("A message sent to the server");
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-    }
+    let _ = tokio::time::sleep(Duration::from_secs(200)).await;
 
     info!("going to shutdown");
 

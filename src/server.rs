@@ -1,8 +1,11 @@
-use crate::{Message, state::Db};
+use crate::{
+    Message,
+    state::{Db, DbEvent, DbEventListener},
+};
 use futures::SinkExt;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -12,7 +15,6 @@ use tracing::{debug, error, info};
 #[derive(Debug)]
 pub struct Taxicab {
     listener: TcpListener,
-    db: Db,
 }
 
 enum ServerCommand {
@@ -33,10 +35,7 @@ enum ServerCommand {
 impl Taxicab {
     ///Create a new taxicab server instance by the given TcpListener
     pub fn new(listener: TcpListener) -> Self {
-        Self {
-            listener,
-            db: Db::new(),
-        }
+        Self { listener }
     }
 
     ///Run the taxicab server instance
@@ -47,8 +46,16 @@ impl Taxicab {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel::<ServerCommand>();
 
-        let tx_handler = tx.clone();
-        let mut db = self.db.instance();
+        let (db, db_event_listener) = Db::new();
+
+        let mut dispatcher = Dispatcher::new(db_event_listener, tx.clone());
+
+        let dispatcher_db = db.instance();
+        tokio::spawn(async move {
+            dispatcher.run(dispatcher_db).await;
+        });
+
+        let mut db = db.instance();
         tokio::spawn(async move {
             while let Some(command) = rx.recv().await {
                 match command {
@@ -65,7 +72,7 @@ impl Taxicab {
                     }
 
                     ServerCommand::MessageReceived { message, from_addr } => {
-                        Self::on_message_received(message, from_addr, &mut db, tx_handler.clone());
+                        Self::on_message_received(message, from_addr, &mut db);
                     }
                 }
             }
@@ -83,12 +90,7 @@ impl Taxicab {
         }
     }
 
-    fn on_message_received(
-        message: Vec<u8>,
-        from_addr: String,
-        db: &mut Db,
-        tx_handler: UnboundedSender<ServerCommand>,
-    ) {
+    fn on_message_received(message: Vec<u8>, from_addr: String, db: &mut Db) {
         debug!(Address = from_addr, "A new message received from a client");
 
         let bytes = message.clone();
@@ -100,20 +102,6 @@ impl Taxicab {
                 }
                 Message::Request(message) => {
                     db.enqueue(message.exchange(), bytes);
-                    let message = Message::new_command(
-                        message.exchange().to_string(),
-                        format!(
-                            "I received your message. Message : {}. Here is your address if you did not know: {}",
-                            message.content(),
-                            from_addr
-                        ),
-                    );
-
-                    let message = ServerCommand::SendMessage {
-                        message,
-                        to_addr: from_addr,
-                    };
-                    let _ = tx_handler.clone().send(message);
                 }
             },
             Err(_e) => {
@@ -154,9 +142,57 @@ impl Taxicab {
     }
 }
 
+struct Dispatcher {
+    listener: UnboundedReceiver<(String, DbEventListener)>,
+    command_sender: UnboundedSender<ServerCommand>,
+}
+
+impl Dispatcher {
+    pub(crate) fn new(
+        listener: UnboundedReceiver<(String, UnboundedReceiver<DbEvent>)>,
+        command_sender: UnboundedSender<ServerCommand>,
+    ) -> Self {
+        Self {
+            listener,
+            command_sender,
+        }
+    }
+
+    pub async fn run(&mut self, db: Db) {
+        while let Some((exchange, mut listener)) = self.listener.recv().await {
+            debug!(exchange = exchange, "Message dispatcher started for");
+
+            let exchange_db = db.instance();
+            let command_sender = self.command_sender.clone();
+            tokio::spawn(async move {
+                while let Some(event) = listener.recv().await {
+                    match event {
+                        DbEvent::NewMessage(exchange) => {
+                            let client = exchange_db.instance().who_handles(&exchange).next();
+                            if let Some(client) = client {
+                                if let Some(message) = exchange_db.instance().dequeue(&exchange) {
+                                    let _ = command_sender.send(ServerCommand::SendMessage {
+                                        message: Message::from_bytes(&message).unwrap(),
+                                        to_addr: client.to_string(),
+                                    });
+                                }
+                                debug!(
+                                    exchange = exchange,
+                                    clients = client,
+                                    "A new messsage added event"
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
 ///run a taxicab server insatnce by the given TcpListener.
 ///
-///```rust 
+///```rust
 ///use std::error::Error;
 ///use taxicab::run;
 ///use tokio::net::TcpListener;
