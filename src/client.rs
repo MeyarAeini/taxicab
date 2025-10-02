@@ -5,7 +5,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::{Message, message};
+use crate::Message;
 use tracing::{debug, error};
 
 enum ClientCommand {

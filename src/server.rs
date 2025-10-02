@@ -159,34 +159,38 @@ impl Dispatcher {
     }
 
     pub async fn run(&mut self, db: Db) {
-        while let Some((exchange, mut listener)) = self.listener.recv().await {
+        while let Some((exchange, listener)) = self.listener.recv().await {
             debug!(exchange = exchange, "Message dispatcher started for");
 
-            let exchange_db = db.instance();
-            let command_sender = self.command_sender.clone();
-            tokio::spawn(async move {
-                while let Some(event) = listener.recv().await {
-                    match event {
-                        DbEvent::NewMessage(exchange) => {
-                            let client = exchange_db.instance().who_handles(&exchange).next();
-                            if let Some(client) = client {
-                                if let Some(message) = exchange_db.instance().dequeue(&exchange) {
-                                    let _ = command_sender.send(ServerCommand::SendMessage {
-                                        message: Message::from_bytes(&message).unwrap(),
-                                        to_addr: client.to_string(),
-                                    });
-                                }
-                                debug!(
-                                    exchange = exchange,
-                                    clients = client,
-                                    "A new messsage added event"
-                                );
+            self.spawn_exchange_dispatcher(db.instance(), listener);
+        }
+    }
+
+    fn spawn_exchange_dispatcher(&self, db: Db, mut listener: UnboundedReceiver<DbEvent>) {
+        let command_sender = self.command_sender.clone();
+        let mut db = db.instance();
+        tokio::spawn(async move {
+            while let Some(event) = listener.recv().await {
+                match event {
+                    DbEvent::NewMessage(exchange) => {
+                        let client = db.who_handles(&exchange).next();
+                        if let Some(client) = client {
+                            if let Some(message) = db.dequeue(&exchange) {
+                                let _ = command_sender.send(ServerCommand::SendMessage {
+                                    message: Message::from_bytes(&message).unwrap(),
+                                    to_addr: client.to_string(),
+                                });
                             }
+                            debug!(
+                                exchange = exchange,
+                                clients = client,
+                                "A new messsage added event"
+                            );
                         }
                     }
                 }
-            });
-        }
+            }
+        });
     }
 }
 

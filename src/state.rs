@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -132,7 +132,7 @@ impl Db {
 
     fn send_event(&self, exchange: &str, event: DbEvent) {
         if let Some(event_sender) = self.event_senders.get(exchange) {
-            event_sender.send(event);
+            let _ = event_sender.send(event);
         }
     }
 }
