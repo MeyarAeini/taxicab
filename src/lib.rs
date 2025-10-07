@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 mod client;
+mod controller;
 mod message;
 mod server;
 mod state;
