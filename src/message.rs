@@ -35,7 +35,7 @@ pub enum Message {
     Act(MessageId),
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, Clone)]
 pub struct CommandMessage {
     message_id: MessageId,
     content: String,
@@ -54,9 +54,13 @@ impl CommandMessage {
     pub fn message_id(&self) -> &str {
         &self.message_id.0
     }
+
+    pub fn id(&self) -> &MessageId {
+        &self.message_id
+    }
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, PartialEq, Eq, Hash, Clone)]
 pub struct MessageId(String);
 
 impl MessageId {

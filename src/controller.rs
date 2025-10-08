@@ -103,7 +103,6 @@ impl Controller {
     fn on_message_received(message: Vec<u8>, from_addr: String, db: &mut Db) {
         debug!(Address = from_addr, "A new message received from a client");
 
-        let bytes = message.clone();
         match Message::from_bytes(message.as_slice()) {
             Ok(message) => match message {
                 Message::Act(message) => {
@@ -113,7 +112,7 @@ impl Controller {
                     db.bind(&exchange, from_addr);
                 }
                 Message::Request(message) => {
-                    db.enqueue(message.exchange(), bytes);
+                    db.enqueue(message);
                 }
             },
             Err(_e) => {

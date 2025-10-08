@@ -4,14 +4,32 @@ use std::{
 };
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tracing::info;
+use tokio::time::Instant;
+use tracing::{debug, info};
 
-use crate::Message;
+use crate::{
+    Message,
+    message::{CommandMessage, MessageId},
+};
 
 type MessageSender = UnboundedSender<Message>;
-type MessageValue = Vec<u8>;
+//type MessageValue = Vec<u8>;
 pub(crate) type DbEventListener = UnboundedReceiver<DbEvent>;
 pub(crate) type DbExchangeListener = (String, DbEventListener);
+
+#[derive(Debug)]
+struct MessageEntry {
+    value: CommandMessage,
+    received: Option<Instant>,
+    sent: Option<Instant>,
+    act: Option<Instant>,
+    consumer: Option<String>,
+}
+
+//#[derive(Debug)]
+//struct Chauffeur {
+//    endpoint: String,
+//}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Db {
@@ -28,8 +46,21 @@ pub(crate) enum DbEvent {
 #[derive(Debug)]
 struct State {
     endpoints: HashMap<String, MessageSender>,
-    exchanges: HashMap<String, VecDeque<MessageValue>>,
+    exchanges: HashMap<String, VecDeque<MessageId>>,
     bindings: HashMap<String, HashSet<String>>,
+    messages: HashMap<MessageId, MessageEntry>,
+}
+
+impl MessageEntry {
+    fn new(value: CommandMessage) -> Self {
+        Self {
+            value,
+            received: None,
+            sent: None,
+            act: None,
+            consumer: None,
+        }
+    }
 }
 
 impl Db {
@@ -41,6 +72,7 @@ impl Db {
                     endpoints: HashMap::new(),
                     exchanges: HashMap::new(),
                     bindings: HashMap::new(),
+                    messages: HashMap::new(),
                 })),
                 event_sender: tx,
                 event_senders: HashMap::new(),
@@ -69,50 +101,132 @@ impl Db {
         Ok(())
     }
 
-    pub fn enqueue(&mut self, exchange: &str, message: MessageValue) {
+    pub fn enqueue(&mut self, message: CommandMessage) {
         let mut state = self.state.lock().unwrap();
 
-        if !state.exchanges.contains_key(exchange) {
+        let State {
+            exchanges,
+            messages,
+            ..
+        } = &mut *state;
+
+        if !exchanges.contains_key(message.exchange()) {
             let (tx, rx) = mpsc::unbounded_channel::<DbEvent>();
-            let _ = self.event_sender.send((exchange.to_string(), rx));
-            self.event_senders.insert(exchange.to_string(), tx);
+            let _ = self.event_sender.send((message.exchange().to_string(), rx));
+            self.event_senders
+                .insert(message.exchange().to_string(), tx);
         }
 
-        let queue = state
-            .exchanges
-            .entry(exchange.to_string())
-            .or_insert(VecDeque::new());
+        let message_id = message.id().clone();
+        let message_trace = message.message_id().to_string();
 
-        queue.push_back(message);
+        debug!(message_id = message_trace, "enqueue");
 
-        self.send_event(exchange, DbEvent::NewMessage(exchange.to_string()));
+        if !messages.contains_key(&message_id) {
+            //insert the message for its permanement storage
+            let message = messages.entry(message_id.clone()).or_insert({
+                let mut message = MessageEntry::new(message);
+                message.received = Some(Instant::now());
+                message
+            });
 
-        info!(
-            exchange = exchange,
-            queued_count = queue.len(),
-            "A new message enqueued"
-        );
+            //make sure the queue exist for the message exchage or create a new one
+            let queue = exchanges
+                .entry(message.value.exchange().to_string())
+                .or_insert(VecDeque::new());
+
+            //push the message id on the queue waiting to be delivered to a consumer
+            queue.push_back(message_id);
+
+            //send out an event indicating a new message is received
+            self.send_event(
+                message.value.exchange(),
+                DbEvent::NewMessage(message.value.exchange().to_string()),
+            );
+
+            info!(
+                exchange = message.value.exchange(),
+                queued_count = queue.len(),
+                "A new message enqueued"
+            );
+        }
+
+        debug!(message_id = message_trace, "enqueue exit");
     }
 
-    pub fn dequeue(&mut self, exchange: &str) -> Option<MessageValue> {
+    pub fn dequeue<A>(&mut self, exchange: &str, action: A) -> anyhow::Result<bool>
+    where
+        A: Fn(CommandMessage, String) -> anyhow::Result<()>,
+    {
         let mut state = self.state.lock().unwrap();
 
-        if let Some(queue) = state.exchanges.get_mut(exchange) {
-            queue.pop_front()
-        } else {
-            None
+        let State {
+            exchanges,
+            messages,
+            bindings,
+            ..
+        } = &mut *state;
+
+        debug!(exchange = exchange, "try to dequeue");
+
+        if let Some(queue) = exchanges.get_mut(exchange) {
+            debug!(exchange = exchange, "the excahnge exists");
+            if let Some(endpoint) = bindings
+                .get(exchange)
+                .map(|set| set.clone().into_iter())
+                .into_iter()
+                .flatten()
+                .next()
+            {
+                debug!(
+                    exchange = exchange,
+                    endpoint = endpoint,
+                    "there is an endpoint to process a message"
+                );
+                let message = queue
+                    .pop_front()
+                    .and_then(|id| messages.get_mut(&id).map(|message| message));
+
+                if let Some(message) = message {
+                    debug!(
+                        exchange = exchange,
+                        endpoint = endpoint,
+                        "going to process a message"
+                    );
+                    match action(message.value.clone(), endpoint.clone()) {
+                        Ok(_) => {
+                            message.sent = Some(Instant::now());
+                            message.consumer = Some(endpoint);
+                            //TODO : put the message id in the waiting to receive ack list
+                            //TODO : mark the endpoint as an endpoint on process for the `exchange`
+                        }
+                        Err(e) => {
+                            //something went wrong, push back the message into the queue
+                            //any other action on data should be rolled back here
+                            queue.push_front(message.value.id().clone());
+                            return Err(e);
+                        }
+                    }
+
+                    return Ok(true);
+                }
+            }
         }
+
+        debug!(exchange = exchange, "exiting the dequeue process");
+
+        Ok(false)
     }
 
-    pub fn exchange_count(&self, exchange: &str) -> usize {
-        let state = self.state.lock().unwrap();
+    // pub fn exchange_count(&self, exchange: &str) -> usize {
+    //     let state = self.state.lock().unwrap();
 
-        if let Some(exchange) = state.exchanges.get(exchange) {
-            exchange.len()
-        } else {
-            0
-        }
-    }
+    //     if let Some(exchange) = state.exchanges.get(exchange) {
+    //         exchange.len()
+    //     } else {
+    //         0
+    //     }
+    // }
 
     pub fn bind(&mut self, exchange: &str, endpoint: String) {
         let mut state = self.state.lock().unwrap();
@@ -132,16 +246,16 @@ impl Db {
         );
     }
 
-    pub fn who_handles(&self, exchange: &str) -> impl Iterator<Item = String> {
-        let state = self.state.lock().unwrap();
+    //pub fn who_handles(&self, exchange: &str) -> impl Iterator<Item = String> {
+    //    let state = self.state.lock().unwrap();
 
-        state
-            .bindings
-            .get(exchange)
-            .map(|set| set.clone().into_iter())
-            .into_iter()
-            .flatten()
-    }
+    //    state
+    //        .bindings
+    //        .get(exchange)
+    //        .map(|set| set.clone().into_iter())
+    //        .into_iter()
+    //        .flatten()
+    //}
 
     fn send_event(&self, exchange: &str, event: DbEvent) {
         if let Some(event_sender) = self.event_senders.get(exchange) {

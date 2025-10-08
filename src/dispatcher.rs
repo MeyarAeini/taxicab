@@ -1,5 +1,5 @@
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::{
     Message,
@@ -56,24 +56,21 @@ impl Dispatcher {
 
 fn process_next_message(exchange: &str, db: Db, controller: ControllerListener) {
     loop {
-        if db.exchange_count(exchange) == 0 {
-            break;
-        }
+        match db.instance().dequeue(exchange, |message, endpoint| {
+            let _ = controller.send_message(Message::Request(message), endpoint.clone())?;
+            debug!(
+                exchange = exchange,
+                endpoint = endpoint,
+                "A new messsage sent to destination"
+            );
 
-        match db.who_handles(exchange).next() {
-            Some(client) => match db.instance().dequeue(exchange) {
-                Some(message) => {
-                    let _ = controller
-                        .send_message(Message::from_bytes(&message).unwrap(), client.to_string());
-                    debug!(
-                        exchange = exchange,
-                        clients = client,
-                        "A new messsage sent to destination"
-                    );
-                }
-                None => break,
-            },
-            None => break,
+            Ok(())
+        }) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                error!(error = e.to_string());
+            }
         }
     }
 }
