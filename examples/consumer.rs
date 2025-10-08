@@ -1,6 +1,6 @@
 use std::{error::Error, time::Duration};
 
-use taxicab::TaxicabClient;
+use taxicab::connect;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -16,15 +16,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let (client, mut message_receiver) = TaxicabClient::connect("127.0.0.1:1729").await?;
+    let (message_sender, mut message_receiver) = connect("127.0.0.1:1729").await?;
 
     info!("connected to the server");
+
+    let ack_sender = message_sender.clone();
 
     tokio::spawn(async move {
         while let Some(message) = message_receiver.recv().await {
             match message {
                 taxicab::Message::Request(message) => {
                     info!(Message = message.content(), "Message received");
+                    let _ = ack_sender
+                        .ack(
+                            message
+                                .message_id()
+                                .parse()
+                                .expect("failed parsing &str to MessageId"),
+                        )
+                        .await;
                 }
                 _ => {}
             }
@@ -33,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let exchange = "some-exchange";
 
-    client.bind(exchange).await?;
+    message_sender.bind(exchange).await?;
 
     let _ = tokio::time::sleep(Duration::from_secs(200)).await;
 

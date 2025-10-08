@@ -7,6 +7,7 @@
 
 mod client;
 mod controller;
+mod dispatcher;
 mod message;
 mod server;
 mod state;
@@ -17,7 +18,7 @@ mod state;
 ///By using this struct, a new client to connect to the `taxicab` server will be configured and
 ///initiated.
 ///
-pub use client::TaxicabClient;
+pub use client::{TaxicabSender, connect};
 
 ///
 ///This struct is the frame of each message transported on each server/client intraction for

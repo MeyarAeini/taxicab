@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use taxicab::TaxicabClient;
+use taxicab::connect;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let (client, mut message_receiver) = TaxicabClient::connect("127.0.0.1:1729").await?;
+    let (message_sender, mut message_receiver) = connect("127.0.0.1:1729").await?;
 
     info!("connected to the server");
 
@@ -37,7 +37,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //client.bind(exchange).await?;
 
     for _i in 0..5 {
-        client.send("take me home, please!", exchange).await?;
+        message_sender
+            .send("take me home, please!", exchange)
+            .await?;
 
         info!("A message sent to the server");
 

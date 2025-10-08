@@ -22,6 +22,7 @@ pub(crate) struct Db {
 
 pub(crate) enum DbEvent {
     NewMessage(String),
+    NewBinding(String),
 }
 
 #[derive(Debug)]
@@ -56,7 +57,7 @@ impl Db {
         info!(endpoint = endpoint, "keep a new endpoint in the loop");
         let mut state = self.state.lock().unwrap();
 
-        state.endpoints.insert(endpoint, endpoint_sender);
+        state.endpoints.insert(endpoint.clone(), endpoint_sender);
     }
 
     pub fn forward_message_to(&self, message: Message, to_endpoint: &str) -> anyhow::Result<()> {
@@ -103,6 +104,16 @@ impl Db {
         }
     }
 
+    pub fn exchange_count(&self, exchange: &str) -> usize {
+        let state = self.state.lock().unwrap();
+
+        if let Some(exchange) = state.exchanges.get(exchange) {
+            exchange.len()
+        } else {
+            0
+        }
+    }
+
     pub fn bind(&mut self, exchange: &str, endpoint: String) {
         let mut state = self.state.lock().unwrap();
 
@@ -111,6 +122,8 @@ impl Db {
         let binding = entry.or_insert(HashSet::new());
 
         binding.insert(endpoint.to_string());
+
+        self.send_event(exchange, DbEvent::NewBinding(exchange.to_string()));
 
         info!(
             exchange = exchange,

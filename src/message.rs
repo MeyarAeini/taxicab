@@ -1,4 +1,7 @@
+use std::{fmt, str::FromStr, string::ParseError};
+
 use bincode::{Decode, Encode, config, error::DecodeError};
+use uuid::Uuid;
 
 ///Carries a message from client to server vice versa
 ///
@@ -47,16 +50,40 @@ impl CommandMessage {
     pub fn content(&self) -> &str {
         &self.content
     }
+
+    pub fn message_id(&self) -> &str {
+        &self.message_id.0
+    }
 }
 
 #[derive(Encode, Decode, Debug)]
-pub struct MessageId;
+pub struct MessageId(String);
+
+impl MessageId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+}
+
+impl FromStr for MessageId {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(MessageId(s.to_string()))
+    }
+}
+
+impl fmt::Display for MessageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl Message {
     ///Initiate a new `Message` instance by the given `exchange` and the message `body` value.
     pub fn new_command(exchange: String, content: String) -> Self {
         Message::Request(CommandMessage {
-            message_id: MessageId {},
+            message_id: MessageId::new(),
             content,
             exchange,
         })

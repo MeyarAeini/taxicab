@@ -1,14 +1,11 @@
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::{debug, error};
 
-use crate::{
-    Message,
-    state::{Db, DbEvent, DbEventListener},
-};
+use crate::{Message, dispatcher::Dispatcher, message, state::Db};
 
 pub(crate) struct Controller;
 
-pub enum Command {
+enum Command {
     NewClient {
         addr: String,
         sender: UnboundedSender<Message>,
@@ -109,7 +106,9 @@ impl Controller {
         let bytes = message.clone();
         match Message::from_bytes(message.as_slice()) {
             Ok(message) => match message {
-                Message::Act(_) => {}
+                Message::Act(message) => {
+                    debug!(message = message.to_string(), "received an acknowledge");
+                }
                 Message::Binding(exchange) => {
                     db.bind(&exchange, from_addr);
                 }
@@ -126,56 +125,4 @@ impl Controller {
 
 pub async fn run_controller() -> anyhow::Result<ControllerListener> {
     Ok(Controller::run().await?.1)
-}
-
-struct Dispatcher {
-    listener: UnboundedReceiver<(String, DbEventListener)>,
-    controller: ControllerListener,
-}
-
-impl Dispatcher {
-    pub(crate) fn new(
-        listener: UnboundedReceiver<(String, UnboundedReceiver<DbEvent>)>,
-        controller: ControllerListener,
-    ) -> Self {
-        Self {
-            listener,
-            controller,
-        }
-    }
-
-    pub async fn run(&mut self, db: Db) {
-        while let Some((exchange, listener)) = self.listener.recv().await {
-            debug!(exchange = exchange, "Message dispatcher started for");
-
-            self.spawn_exchange_dispatcher(db.instance(), listener);
-        }
-    }
-
-    fn spawn_exchange_dispatcher(&self, db: Db, mut listener: UnboundedReceiver<DbEvent>) {
-        let controller = self.controller.clone();
-        let mut db = db.instance();
-        tokio::spawn(async move {
-            while let Some(event) = listener.recv().await {
-                match event {
-                    DbEvent::NewMessage(exchange) => {
-                        let client = db.who_handles(&exchange).next();
-                        if let Some(client) = client {
-                            while let Some(message) = db.dequeue(&exchange) {
-                                let _ = controller.send_message(
-                                    Message::from_bytes(&message).unwrap(),
-                                    client.to_string(),
-                                );
-                            }
-                            debug!(
-                                exchange = exchange,
-                                clients = client,
-                                "A new messsage added event"
-                            );
-                        }
-                    }
-                }
-            }
-        });
-    }
 }

@@ -5,7 +5,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::Message;
+use crate::{Message, message::MessageId};
 use tracing::{debug, error};
 
 enum ClientCommand {
@@ -18,8 +18,25 @@ enum ClientCommand {
 ///A taxicab client send a `Message` to the taxicab server using tokio `TcpStream`.
 ///
 ///It also receives the `Message`s from the taxicab server to process them.
-pub struct TaxicabClient {
+#[derive(Clone)]
+pub struct TaxicabSender {
     sender: UnboundedSender<ClientCommand>,
+}
+
+struct TaxicabClient;
+
+///It connect a taxicab client to the taxicab server by the given taxicab address.
+///This method return a `Result` wrapped instance of taxicab client and a channel
+///unbounded receiver instance of the `Message`s.
+///
+///This method is instrumented by the `tracing` crate so the client side code can initilize the
+///tracing and subscribe to the tracing events.
+///
+///The client uses the `tokio-util` crate to transmit Framed messages. It uses the
+///LengthDelimitedCodec.
+#[tracing::instrument]
+pub async fn connect(addr: &str) -> anyhow::Result<(TaxicabSender, UnboundedReceiver<Message>)> {
+    TaxicabClient::connect(addr).await
 }
 
 impl TaxicabClient {
@@ -65,8 +82,9 @@ impl TaxicabClient {
     ///
     ///The client uses the `tokio-util` crate to transmit Framed messages. It uses the
     ///LengthDelimitedCodec.
-    #[tracing::instrument]
-    pub async fn connect(addr: &str) -> anyhow::Result<(Self, UnboundedReceiver<Message>)> {
+    pub async fn connect(
+        addr: &str,
+    ) -> anyhow::Result<(TaxicabSender, UnboundedReceiver<Message>)> {
         //initilize a TcpStream connected to the taxicab server
         let stream = TcpStream::connect(addr).await?;
 
@@ -115,13 +133,15 @@ impl TaxicabClient {
         });
 
         Ok((
-            Self {
+            TaxicabSender {
                 sender: taxicab_command_sender,
             },
             rx_receiver,
         ))
     }
+}
 
+impl TaxicabSender {
     ///Send a string slice message to the taxicab server.
     ///
     ///This method uses the taxicab internal Command channel to pass the message to the taxicab tcp
@@ -141,6 +161,15 @@ impl TaxicabClient {
 
         Ok(())
     }
+
+    ///Send an acknowledge message to the server
+    pub async fn ack(&self, message_id: MessageId) -> anyhow::Result<()> {
+        let message = Message::Act(message_id);
+
+        self.sender.send(ClientCommand::SendMessage(message))?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -150,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn client_test() {
         if let Ok((client, _message_receiver)) = TaxicabClient::connect("127.0.0.1::1729").await {
-            client.send("").await;
+            let _ = client.send("", "some_exchange").await;
         }
     }
 }
