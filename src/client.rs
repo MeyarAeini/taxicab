@@ -164,7 +164,7 @@ impl TaxicabSender {
 
     ///Send an acknowledge message to the server
     pub async fn ack(&self, message_id: MessageId) -> anyhow::Result<()> {
-        let message = Message::Act(message_id);
+        let message = Message::Ack(message_id);
 
         self.sender.send(ClientCommand::SendMessage(message))?;
 

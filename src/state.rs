@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -22,7 +22,7 @@ struct MessageEntry {
     value: CommandMessage,
     received: Option<Instant>,
     sent: Option<Instant>,
-    act: Option<Instant>,
+    ack: Option<Instant>,
     consumer: Option<String>,
 }
 
@@ -49,6 +49,10 @@ struct State {
     exchanges: HashMap<String, VecDeque<MessageId>>,
     bindings: HashMap<String, HashSet<String>>,
     messages: HashMap<MessageId, MessageEntry>,
+    //work in progress
+    wip: BTreeSet<(Instant, MessageId)>,
+    //endpoint work loads ,  (exchange, endpoint) -> current work load
+    ewl: BTreeMap<(String, String), usize>,
 }
 
 impl MessageEntry {
@@ -57,7 +61,7 @@ impl MessageEntry {
             value,
             received: None,
             sent: None,
-            act: None,
+            ack: None,
             consumer: None,
         }
     }
@@ -73,6 +77,8 @@ impl Db {
                     exchanges: HashMap::new(),
                     bindings: HashMap::new(),
                     messages: HashMap::new(),
+                    wip: BTreeSet::new(),
+                    ewl: BTreeMap::new(),
                 })),
                 event_sender: tx,
                 event_senders: HashMap::new(),
@@ -164,6 +170,8 @@ impl Db {
             exchanges,
             messages,
             bindings,
+            wip,
+            ewl,
             ..
         } = &mut *state;
 
@@ -195,10 +203,24 @@ impl Db {
                     );
                     match action(message.value.clone(), endpoint.clone()) {
                         Ok(_) => {
+                            //set the message sent time and the consumer value.
                             message.sent = Some(Instant::now());
-                            message.consumer = Some(endpoint);
-                            //TODO : put the message id in the waiting to receive ack list
-                            //TODO : mark the endpoint as an endpoint on process for the `exchange`
+                            message.consumer = Some(endpoint.clone());
+
+                            //the message is added to the `Work In Progress` BTree set.
+                            wip.insert((Instant::now(), message.value.id().clone()));
+
+                            //mark the endpoint as an endpoint on process for the `exchange`
+                            let endpoint_works = ewl
+                                .entry((exchange.to_string(), endpoint.clone()))
+                                .or_insert(0);
+                            *endpoint_works += 1;
+                            debug!(
+                                Count = *endpoint_works,
+                                endpoint = endpoint,
+                                exchange = exchange,
+                                "Work load"
+                            );
                         }
                         Err(e) => {
                             //something went wrong, push back the message into the queue
@@ -216,6 +238,24 @@ impl Db {
         debug!(exchange = exchange, "exiting the dequeue process");
 
         Ok(false)
+    }
+
+    pub fn ack(&mut self, id: MessageId, endpoint: &str) -> anyhow::Result<()> {
+        let State { messages, .. } = &mut *self.state.lock().unwrap();
+
+        let trace_id = id.to_string();
+        messages.entry(id).and_modify(|message| {
+            if message.consumer.as_deref() == Some(endpoint) {
+                message.ack = Some(Instant::now());
+                debug!(
+                    id = trace_id,
+                    message = format!("{:#?}", message),
+                    "A message processed successfully"
+                );
+            }
+        });
+
+        Ok(())
     }
 
     // pub fn exchange_count(&self, exchange: &str) -> usize {

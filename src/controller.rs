@@ -105,8 +105,9 @@ impl Controller {
 
         match Message::from_bytes(message.as_slice()) {
             Ok(message) => match message {
-                Message::Act(message) => {
+                Message::Ack(message) => {
                     debug!(message = message.to_string(), "received an acknowledge");
+                    let _ = db.ack(message, &from_addr);
                 }
                 Message::Binding(exchange) => {
                     db.bind(&exchange, from_addr);

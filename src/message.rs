@@ -32,7 +32,7 @@ pub enum Message {
     ///Acknowledge
     ///
     ///An acknowledge is a response to the server from a client indicating I handled the message
-    Act(MessageId),
+    Ack(MessageId),
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
@@ -60,7 +60,7 @@ impl CommandMessage {
     }
 }
 
-#[derive(Encode, Decode, Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Encode, Decode, Debug, PartialEq, Eq, Hash, Clone, PartialOrd, Ord)]
 pub struct MessageId(String);
 
 impl MessageId {
