@@ -1,7 +1,7 @@
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::{debug, error};
 
-use crate::{Message, dispatcher::Dispatcher, message, state::Db};
+use crate::{Message, dispatcher::Dispatcher, state::Db};
 
 pub(crate) struct Controller;
 
@@ -115,6 +115,7 @@ impl Controller {
                 Message::Request(message) => {
                     db.enqueue(message);
                 }
+                _ => {}
             },
             Err(_e) => {
                 error!("Failed to create a `Message` from the given bytes");

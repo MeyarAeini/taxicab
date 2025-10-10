@@ -3,8 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::time::Instant;
+use tokio::sync::{
+    Notify,
+    mpsc::{self, UnboundedReceiver, UnboundedSender},
+};
+use tokio::time::{Duration, Instant};
 use tracing::{debug, info};
 
 use crate::{
@@ -33,7 +36,7 @@ struct MessageEntry {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Db {
-    state: Arc<Mutex<State>>,
+    shared: Arc<Shared>,
     event_sender: UnboundedSender<DbExchangeListener>,
     event_senders: HashMap<String, UnboundedSender<DbEvent>>,
 }
@@ -41,6 +44,13 @@ pub(crate) struct Db {
 pub(crate) enum DbEvent {
     NewMessage(String),
     NewBinding(String),
+}
+
+#[derive(Debug)]
+struct Shared {
+    state: Mutex<State>,
+
+    background_task: Notify,
 }
 
 #[derive(Debug)]
@@ -69,17 +79,25 @@ impl MessageEntry {
 
 impl Db {
     pub fn new() -> (Self, UnboundedReceiver<DbExchangeListener>) {
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                endpoints: HashMap::new(),
+                exchanges: HashMap::new(),
+                bindings: HashMap::new(),
+                messages: HashMap::new(),
+                wip: BTreeSet::new(),
+                ewl: BTreeMap::new(),
+            }),
+            background_task: Notify::new(),
+        });
+
+        tokio::spawn(purge_overdue_messages(shared.clone()));
+
         let (tx, rx) = mpsc::unbounded_channel::<DbExchangeListener>();
+
         (
             Self {
-                state: Arc::new(Mutex::new(State {
-                    endpoints: HashMap::new(),
-                    exchanges: HashMap::new(),
-                    bindings: HashMap::new(),
-                    messages: HashMap::new(),
-                    wip: BTreeSet::new(),
-                    ewl: BTreeMap::new(),
-                })),
+                shared,
                 event_sender: tx,
                 event_senders: HashMap::new(),
             },
@@ -93,13 +111,13 @@ impl Db {
 
     pub fn keep_endpoint_in_loop(&mut self, endpoint: String, endpoint_sender: MessageSender) {
         info!(endpoint = endpoint, "keep a new endpoint in the loop");
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap();
 
         state.endpoints.insert(endpoint.clone(), endpoint_sender);
     }
 
     pub fn forward_message_to(&self, message: Message, to_endpoint: &str) -> anyhow::Result<()> {
-        let state = self.state.lock().unwrap();
+        let state = self.shared.state.lock().unwrap();
         if let Some(endpoint) = state.endpoints.get(to_endpoint) {
             endpoint.send(message)?;
         }
@@ -108,7 +126,7 @@ impl Db {
     }
 
     pub fn enqueue(&mut self, message: CommandMessage) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap();
 
         let State {
             exchanges,
@@ -164,7 +182,7 @@ impl Db {
     where
         A: Fn(CommandMessage, String) -> anyhow::Result<()>,
     {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap();
 
         let State {
             exchanges,
@@ -207,6 +225,15 @@ impl Db {
                             message.sent = Some(Instant::now());
                             message.consumer = Some(endpoint.clone());
 
+                            let overdue = wip
+                                .iter()
+                                .next()
+                                .map(|entry| entry.0.elapsed())
+                                .is_some_and(|elapsed| elapsed > Duration::from_secs(2));
+                            if overdue {
+                                self.shared.background_task.notify_one();
+                            }
+
                             //the message is added to the `Work In Progress` BTree set.
                             wip.insert((Instant::now(), message.value.id().clone()));
 
@@ -241,17 +268,13 @@ impl Db {
     }
 
     pub fn ack(&mut self, id: MessageId, endpoint: &str) -> anyhow::Result<()> {
-        let State { messages, .. } = &mut *self.state.lock().unwrap();
+        let State { messages, .. } = &mut *self.shared.state.lock().unwrap();
 
         let trace_id = id.to_string();
         messages.entry(id).and_modify(|message| {
             if message.consumer.as_deref() == Some(endpoint) {
                 message.ack = Some(Instant::now());
-                debug!(
-                    id = trace_id,
-                    message = format!("{:#?}", message),
-                    "A message processed successfully"
-                );
+                debug!(id = trace_id, "A message processed successfully");
             }
         });
 
@@ -269,7 +292,7 @@ impl Db {
     // }
 
     pub fn bind(&mut self, exchange: &str, endpoint: String) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.shared.state.lock().unwrap();
 
         let entry = state.bindings.entry(exchange.to_string());
 
@@ -300,6 +323,70 @@ impl Db {
     fn send_event(&self, exchange: &str, event: DbEvent) {
         if let Some(event_sender) = self.event_senders.get(exchange) {
             let _ = event_sender.send(event);
+        }
+    }
+}
+
+impl Shared {
+    fn purge_overdue_messages(&self) -> Option<Instant> {
+        let State { wip, messages, exchanges, endpoints, .. } = &mut *self.state.lock().unwrap();
+
+        let due = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+
+        while let Some(&(when, ref message_id)) = wip.iter().next() {
+            if when > due {
+                return Some(when);
+            }
+
+            debug!(
+                message_id = message_id.to_string(),
+                "this message is overdue"
+            );
+
+            let is_processed = messages
+                .get(&message_id)
+                .is_some_and(|message| message.ack.is_some());
+
+            //if the message's process is finished then just remove the message id from wip 
+            //otherwise move back the message to the queue
+            if !is_processed {
+                if let Some(message) = messages.get_mut(&message_id) {
+                    debug!("marking the message as not work in progress");
+                    message.sent = None;
+                    if let Some(endpoint) = message.consumer.take() {
+                        if let Some(endpoint) = endpoints.get(&endpoint) {
+                            let _ = endpoint.send(Message::Cancellation(message_id.clone()));
+                        }
+                    }
+
+                    if let Some(exchage) = exchanges.get_mut(message.value.exchange()) {
+                        exchage.push_front(message_id.clone());
+                    }
+
+                }
+                //TODO: update the message in the messages permanent storage
+                //TODO: enqueue the message id for next in front of the queue
+                //TODO: notify the current consumer about this decision
+            }
+
+            //remove the record from the wip
+            wip.remove(&(when, message_id.clone()));
+        }
+
+        None
+    }
+}
+
+async fn purge_overdue_messages(shared: Arc<Shared>) {
+    loop {
+        if let Some(when) = shared.purge_overdue_messages() {
+            tokio::select! {
+            _ = tokio::time::sleep_until(when) => {},
+            _ = shared.background_task.notified() => {}
+            }
+        } else {
+            //wait for the next background task notification
+            shared.background_task.notified().await;
         }
     }
 }

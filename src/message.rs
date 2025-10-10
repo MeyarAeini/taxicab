@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr, string::ParseError};
 
-use bincode::{Decode, Encode, config, error::DecodeError};
+use bincode::{config, error::DecodeError, Decode, Encode};
 use uuid::Uuid;
 
 ///Carries a message from client to server vice versa
@@ -33,6 +33,11 @@ pub enum Message {
     ///
     ///An acknowledge is a response to the server from a client indicating I handled the message
     Ack(MessageId),
+
+    ///Cancellation
+    ///
+    ///Cancellation token for a message which the server have not received ack for it on time
+    Cancellation(MessageId),
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
