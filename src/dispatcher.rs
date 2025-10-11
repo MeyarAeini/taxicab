@@ -57,7 +57,7 @@ impl Dispatcher {
 fn process_next_message(exchange: &str, db: Db, controller: ControllerListener) {
     loop {
         match db.instance().dequeue(exchange, |message, endpoint| {
-            let _ = controller.send_message(Message::Request(message), endpoint.clone())?;
+            let _ = controller.send_message(Message::Request(message), endpoint.to_string())?;
             debug!(
                 exchange = exchange,
                 endpoint = endpoint,

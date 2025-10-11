@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
+    usize,
 };
 
 use tokio::sync::{
@@ -62,7 +63,7 @@ struct State {
     //work in progress
     wip: BTreeSet<(Instant, MessageId)>,
     //endpoint work loads ,  (exchange, endpoint) -> current work load
-    ewl: BTreeMap<(String, String), usize>,
+    ewl: HashMap<String, HashMap<String, usize>>,
 }
 
 impl MessageEntry {
@@ -86,7 +87,7 @@ impl Db {
                 bindings: HashMap::new(),
                 messages: HashMap::new(),
                 wip: BTreeSet::new(),
-                ewl: BTreeMap::new(),
+                ewl: HashMap::new(),
             }),
             background_task: Notify::new(),
         });
@@ -180,7 +181,7 @@ impl Db {
 
     pub fn dequeue<A>(&mut self, exchange: &str, action: A) -> anyhow::Result<bool>
     where
-        A: Fn(CommandMessage, String) -> anyhow::Result<()>,
+        A: Fn(CommandMessage, &str) -> anyhow::Result<()>,
     {
         let mut state = self.shared.state.lock().unwrap();
 
@@ -197,13 +198,7 @@ impl Db {
 
         if let Some(queue) = exchanges.get_mut(exchange) {
             debug!(exchange = exchange, "the excahnge exists");
-            if let Some(endpoint) = bindings
-                .get(exchange)
-                .map(|set| set.clone().into_iter())
-                .into_iter()
-                .flatten()
-                .next()
-            {
+            if let Some(endpoint) = next_consumer(exchange, bindings, ewl) {
                 debug!(
                     exchange = exchange,
                     endpoint = endpoint,
@@ -219,11 +214,11 @@ impl Db {
                         endpoint = endpoint,
                         "going to process a message"
                     );
-                    match action(message.value.clone(), endpoint.clone()) {
+                    match action(message.value.clone(), endpoint) {
                         Ok(_) => {
                             //set the message sent time and the consumer value.
                             message.sent = Some(Instant::now());
-                            message.consumer = Some(endpoint.clone());
+                            message.consumer = Some(endpoint.to_string());
 
                             let overdue = wip
                                 .iter()
@@ -239,7 +234,9 @@ impl Db {
 
                             //mark the endpoint as an endpoint on process for the `exchange`
                             let endpoint_works = ewl
-                                .entry((exchange.to_string(), endpoint.clone()))
+                                .entry(exchange.to_string())
+                                .or_insert(HashMap::new())
+                                .entry(endpoint.to_string())
                                 .or_insert(0);
                             *endpoint_works += 1;
                             debug!(
@@ -268,28 +265,27 @@ impl Db {
     }
 
     pub fn ack(&mut self, id: MessageId, endpoint: &str) -> anyhow::Result<()> {
-        let State { messages, .. } = &mut *self.shared.state.lock().unwrap();
+        let State { messages, ewl, .. } = &mut *self.shared.state.lock().unwrap();
 
         let trace_id = id.to_string();
         messages.entry(id).and_modify(|message| {
             if message.consumer.as_deref() == Some(endpoint) {
+                //set the acknowledge time for the message
                 message.ack = Some(Instant::now());
+
+                if let Some(work_load) = ewl
+                    .get_mut(message.value.exchange())
+                    .and_then(|exchange_load| exchange_load.get_mut(endpoint))
+                {
+                    *work_load -= 1;
+                }
+
                 debug!(id = trace_id, "A message processed successfully");
             }
         });
 
         Ok(())
     }
-
-    // pub fn exchange_count(&self, exchange: &str) -> usize {
-    //     let state = self.state.lock().unwrap();
-
-    //     if let Some(exchange) = state.exchanges.get(exchange) {
-    //         exchange.len()
-    //     } else {
-    //         0
-    //     }
-    // }
 
     pub fn bind(&mut self, exchange: &str, endpoint: String) {
         let mut state = self.shared.state.lock().unwrap();
@@ -329,7 +325,13 @@ impl Db {
 
 impl Shared {
     fn purge_overdue_messages(&self) -> Option<Instant> {
-        let State { wip, messages, exchanges, endpoints, .. } = &mut *self.state.lock().unwrap();
+        let State {
+            wip,
+            messages,
+            exchanges,
+            endpoints,
+            ..
+        } = &mut *self.state.lock().unwrap();
 
         let due = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
 
@@ -347,26 +349,25 @@ impl Shared {
                 .get(&message_id)
                 .is_some_and(|message| message.ack.is_some());
 
-            //if the message's process is finished then just remove the message id from wip 
+            //if the message's process is finished then just remove the message id from wip
             //otherwise move back the message to the queue
             if !is_processed {
+                //update the message in the messages permanent storage
                 if let Some(message) = messages.get_mut(&message_id) {
                     debug!("marking the message as not work in progress");
                     message.sent = None;
                     if let Some(endpoint) = message.consumer.take() {
+                        //notify the current consumer about this decision
                         if let Some(endpoint) = endpoints.get(&endpoint) {
                             let _ = endpoint.send(Message::Cancellation(message_id.clone()));
                         }
                     }
 
                     if let Some(exchage) = exchanges.get_mut(message.value.exchange()) {
+                        //enqueue the message id for next in front of the queue
                         exchage.push_front(message_id.clone());
                     }
-
                 }
-                //TODO: update the message in the messages permanent storage
-                //TODO: enqueue the message id for next in front of the queue
-                //TODO: notify the current consumer about this decision
             }
 
             //remove the record from the wip
@@ -388,5 +389,33 @@ async fn purge_overdue_messages(shared: Arc<Shared>) {
             //wait for the next background task notification
             shared.background_task.notified().await;
         }
+    }
+}
+
+fn next_consumer<'a>(
+    exchange: &str,
+    bindings: &'a HashMap<String, HashSet<String>>,
+    ewl: &HashMap<String, HashMap<String, usize>>,
+) -> Option<&'a str> {
+    if let Some(exchange_bindings) = bindings.get(exchange) {
+        let mut result: Option<&'a str> = None;
+        let mut least_load = usize::MAX;
+        for endpoint in exchange_bindings.iter().map(|endpoint| {
+            let load = ewl
+                .get(exchange)
+                .and_then(|exchange_load| exchange_load.get(endpoint))
+                .unwrap_or(&0);
+
+            (endpoint, load)
+        }) {
+            if endpoint.1 < &least_load {
+                least_load = endpoint.1.clone();
+                result = Some(endpoint.0.as_str());
+            }
+        }
+
+        result
+    } else {
+        None
     }
 }

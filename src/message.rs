@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr, string::ParseError};
 
-use bincode::{config, error::DecodeError, Decode, Encode};
+use bincode::{Decode, Encode, config, error::DecodeError};
 use uuid::Uuid;
 
 ///Carries a message from client to server vice versa

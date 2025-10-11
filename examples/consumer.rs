@@ -38,7 +38,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .await;
                 }
                 taxicab::Message::Cancellation(message_id) => {
-                    info!(message_id=message_id.to_string(), "the message processing should be canceled for");
+                    info!(
+                        message_id = message_id.to_string(),
+                        "the message processing should be canceled for"
+                    );
                 }
                 _ => {}
             }
