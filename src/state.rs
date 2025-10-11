@@ -305,17 +305,6 @@ impl Db {
         );
     }
 
-    //pub fn who_handles(&self, exchange: &str) -> impl Iterator<Item = String> {
-    //    let state = self.state.lock().unwrap();
-
-    //    state
-    //        .bindings
-    //        .get(exchange)
-    //        .map(|set| set.clone().into_iter())
-    //        .into_iter()
-    //        .flatten()
-    //}
-
     fn send_event(&self, exchange: &str, event: DbEvent) {
         if let Some(event_sender) = self.event_senders.get(exchange) {
             let _ = event_sender.send(event);
@@ -392,13 +381,13 @@ async fn purge_overdue_messages(shared: Arc<Shared>) {
     }
 }
 
-fn next_consumer<'a>(
+fn next_consumer<'binding>(
     exchange: &str,
-    bindings: &'a HashMap<String, HashSet<String>>,
+    bindings: &'binding HashMap<String, HashSet<String>>,
     ewl: &HashMap<String, HashMap<String, usize>>,
-) -> Option<&'a str> {
+) -> Option<&'binding str> {
     if let Some(exchange_bindings) = bindings.get(exchange) {
-        let mut result: Option<&'a str> = None;
+        let mut result: Option<&'binding str> = None;
         let mut least_load = usize::MAX;
         for endpoint in exchange_bindings.iter().map(|endpoint| {
             let load = ewl
