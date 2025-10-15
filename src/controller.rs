@@ -80,7 +80,7 @@ impl Controller {
                 match command {
                     Command::NewClient { addr, sender } => {
                         debug!(Address = addr, "A new client is connected to the server");
-                        db.keep_endpoint_in_loop(addr.to_string(), sender);
+                        db.keep_endpoint_in_loop(&addr, sender);
                     }
 
                     Command::SendMessage { message, to_addr } => {
@@ -110,7 +110,7 @@ impl Controller {
                     let _ = db.ack(message, &from_addr);
                 }
                 Message::Binding(exchange) => {
-                    db.bind(&exchange, from_addr);
+                    db.bind(&exchange, &from_addr);
                 }
                 Message::Request(message) => {
                     db.enqueue(message);

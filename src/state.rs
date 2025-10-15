@@ -66,6 +66,94 @@ struct State {
     ewl: HashMap<String, HashMap<String, usize>>,
 }
 
+impl State {
+    fn push_message(&mut self, message: CommandMessage) -> Option<&MessageEntry> {
+        if self.messages.contains_key(message.id()) {
+            return None;
+        }
+
+        let State {
+            messages,
+            exchanges,
+            ..
+        } = &mut *self;
+
+        {
+            //make sure the queue exist for the message exchage or create a new one
+            if !exchanges.contains_key(message.exchange()) {
+                exchanges.insert(message.exchange().to_string(), VecDeque::new());
+            }
+        }
+
+        let mut message = MessageEntry::new(message);
+        message.received = Some(Instant::now());
+
+        //insert the message for its permanement storage
+        let message = messages
+            .entry(message.value.id().clone())
+            .or_insert(message);
+
+        //push the message id on the queue waiting to be delivered to a consumer
+        exchanges
+            .get_mut(message.value.exchange())
+            .map(|queue| queue.push_back(message.value.id().clone()));
+
+        Some(message)
+    }
+
+    fn has_exchange(&self, exchange: &str) -> bool {
+        self.exchanges.contains_key(exchange)
+    }
+
+    fn next_chauffeur<'binding>(
+        exchange: &str,
+        bindings: &'binding HashMap<String, HashSet<String>>,
+        ewl: &HashMap<String, HashMap<String, usize>>,
+    ) -> Option<&'binding str> {
+        if let Some(exchange_bindings) = bindings.get(exchange) {
+            let mut result: Option<&'binding str> = None;
+            let mut least_load = usize::MAX;
+            for endpoint in exchange_bindings.iter().map(|endpoint| {
+                let load = ewl
+                    .get(exchange)
+                    .and_then(|exchange_load| exchange_load.get(endpoint))
+                    .unwrap_or(&0);
+
+                (endpoint, load)
+            }) {
+                if endpoint.1 < &least_load {
+                    least_load = endpoint.1.clone();
+                    result = Some(endpoint.0.as_str());
+                }
+            }
+
+            result
+        } else {
+            None
+        }
+    }
+
+    fn add_binding(&mut self, exchange: &str, endpoint: &str) -> Option<&str> {
+        {
+            if !self.bindings.contains_key(exchange) {
+                self.bindings.insert(exchange.to_string(), HashSet::new());
+            }
+        }
+
+        if let Some(bindings) = self.bindings.get_mut(exchange) {
+            if bindings.contains(endpoint) {
+                return None;
+            }
+
+            bindings.insert(endpoint.to_string());
+
+            return bindings.get(endpoint).map(|v| v.as_str());
+        }
+
+        None
+    }
+}
+
 impl MessageEntry {
     fn new(value: CommandMessage) -> Self {
         Self {
@@ -110,11 +198,15 @@ impl Db {
         self.clone()
     }
 
-    pub fn keep_endpoint_in_loop(&mut self, endpoint: String, endpoint_sender: MessageSender) {
+    pub fn keep_endpoint_in_loop(&mut self, endpoint: &str, endpoint_sender: MessageSender) {
         info!(endpoint = endpoint, "keep a new endpoint in the loop");
         let mut state = self.shared.state.lock().unwrap();
 
-        state.endpoints.insert(endpoint.clone(), endpoint_sender);
+        if !state.endpoints.contains_key(endpoint) {
+            state
+                .endpoints
+                .insert(endpoint.to_string(), endpoint_sender);
+        }
     }
 
     pub fn forward_message_to(&self, message: Message, to_endpoint: &str) -> anyhow::Result<()> {
@@ -127,42 +219,21 @@ impl Db {
     }
 
     pub fn enqueue(&mut self, message: CommandMessage) {
-        let mut state = self.shared.state.lock().unwrap();
+        let state = &mut *self.shared.state.lock().unwrap();
 
-        let State {
-            exchanges,
-            messages,
-            ..
-        } = &mut *state;
-
-        if !exchanges.contains_key(message.exchange()) {
+        if !state.has_exchange(message.exchange()) {
             let (tx, rx) = mpsc::unbounded_channel::<DbEvent>();
             let _ = self.event_sender.send((message.exchange().to_string(), rx));
             self.event_senders
                 .insert(message.exchange().to_string(), tx);
         }
 
-        let message_id = message.id().clone();
-        let message_trace = message.message_id().to_string();
+        debug!(
+            message_id = message.message_id(),
+            "try to enqueue the message"
+        );
 
-        debug!(message_id = message_trace, "enqueue");
-
-        if !messages.contains_key(&message_id) {
-            //insert the message for its permanement storage
-            let message = messages.entry(message_id.clone()).or_insert({
-                let mut message = MessageEntry::new(message);
-                message.received = Some(Instant::now());
-                message
-            });
-
-            //make sure the queue exist for the message exchage or create a new one
-            let queue = exchanges
-                .entry(message.value.exchange().to_string())
-                .or_insert(VecDeque::new());
-
-            //push the message id on the queue waiting to be delivered to a consumer
-            queue.push_back(message_id);
-
+        if let Some(message) = state.push_message(message) {
             //send out an event indicating a new message is received
             self.send_event(
                 message.value.exchange(),
@@ -171,34 +242,27 @@ impl Db {
 
             info!(
                 exchange = message.value.exchange(),
-                queued_count = queue.len(),
                 "A new message enqueued"
             );
         }
-
-        debug!(message_id = message_trace, "enqueue exit");
     }
 
-    pub fn dequeue<A>(&mut self, exchange: &str, action: A) -> anyhow::Result<bool>
+    pub fn dequeue<A, Xs>(&mut self, exchange: Xs, action: A) -> anyhow::Result<bool>
     where
         A: Fn(CommandMessage, &str) -> anyhow::Result<()>,
+        Xs: AsRef<str>,
     {
         let mut state = self.shared.state.lock().unwrap();
 
-        let State {
-            exchanges,
-            messages,
-            bindings,
-            wip,
-            ewl,
-            ..
-        } = &mut *state;
+        let state = &mut *state;
+
+        let exchange : &str= exchange.as_ref();
 
         debug!(exchange = exchange, "try to dequeue");
 
-        if let Some(queue) = exchanges.get_mut(exchange) {
+        if let Some(queue) = state.exchanges.get_mut(exchange) {
             debug!(exchange = exchange, "the excahnge exists");
-            if let Some(endpoint) = next_consumer(exchange, bindings, ewl) {
+            if let Some(endpoint) = State::next_chauffeur(exchange, &state.bindings, &state.ewl) {
                 debug!(
                     exchange = exchange,
                     endpoint = endpoint,
@@ -206,7 +270,7 @@ impl Db {
                 );
                 let message = queue
                     .pop_front()
-                    .and_then(|id| messages.get_mut(&id).map(|message| message));
+                    .and_then(|id| state.messages.get_mut(&id).map(|message| message));
 
                 if let Some(message) = message {
                     debug!(
@@ -220,7 +284,8 @@ impl Db {
                             message.sent = Some(Instant::now());
                             message.consumer = Some(endpoint.to_string());
 
-                            let overdue = wip
+                            let overdue = state
+                                .wip
                                 .iter()
                                 .next()
                                 .map(|entry| entry.0.elapsed())
@@ -230,10 +295,13 @@ impl Db {
                             }
 
                             //the message is added to the `Work In Progress` BTree set.
-                            wip.insert((Instant::now(), message.value.id().clone()));
+                            state
+                                .wip
+                                .insert((Instant::now(), message.value.id().clone()));
 
                             //mark the endpoint as an endpoint on process for the `exchange`
-                            let endpoint_works = ewl
+                            let endpoint_works = state
+                                .ewl
                                 .entry(exchange.to_string())
                                 .or_insert(HashMap::new())
                                 .entry(endpoint.to_string())
@@ -264,45 +332,57 @@ impl Db {
         Ok(false)
     }
 
-    pub fn ack(&mut self, id: MessageId, endpoint: &str) -> anyhow::Result<()> {
+    pub fn ack<Id, Cs>(&mut self, id: Id, endpoint: Cs) -> anyhow::Result<()>
+    where
+        Id: AsRef<MessageId>,
+        Cs: AsRef<str>,
+    {
         let State { messages, ewl, .. } = &mut *self.shared.state.lock().unwrap();
 
-        let trace_id = id.to_string();
-        messages.entry(id).and_modify(|message| {
-            if message.consumer.as_deref() == Some(endpoint) {
-                //set the acknowledge time for the message
-                message.ack = Some(Instant::now());
+        let endpoint = endpoint.as_ref();
 
-                if let Some(work_load) = ewl
-                    .get_mut(message.value.exchange())
-                    .and_then(|exchange_load| exchange_load.get_mut(endpoint))
-                {
-                    *work_load -= 1;
+        match messages.get_mut(id.as_ref()) {
+            Some(message) => {
+                if message.consumer.as_deref() == Some(endpoint) {
+                    //set the acknowledge time for the message
+                    message.ack = Some(Instant::now());
+
+                    if let Some(work_load) = ewl
+                        .get_mut(message.value.exchange())
+                        .and_then(|exchange_load| exchange_load.get_mut(endpoint))
+                    {
+                        *work_load -= 1;
+                    }
+
+                    debug!(
+                        id = message.value.id().to_string(),
+                        "A message processed successfully"
+                    );
                 }
-
-                debug!(id = trace_id, "A message processed successfully");
             }
-        });
+            None => {}
+        }
 
         Ok(())
     }
 
-    pub fn bind(&mut self, exchange: &str, endpoint: String) {
+    pub fn bind<Xs, Cs>(&mut self, exchange: Xs, endpoint: Cs)
+    where
+        Xs: AsRef<str>,
+        Cs: AsRef<str>,
+    {
         let mut state = self.shared.state.lock().unwrap();
 
-        let entry = state.bindings.entry(exchange.to_string());
+        let exchange: &str = exchange.as_ref();
+        if let Some(endpoint) = state.add_binding(exchange, endpoint.as_ref()) {
+            self.send_event(exchange, DbEvent::NewBinding(exchange.to_string()));
 
-        let binding = entry.or_insert(HashSet::new());
-
-        binding.insert(endpoint.to_string());
-
-        self.send_event(exchange, DbEvent::NewBinding(exchange.to_string()));
-
-        info!(
-            exchange = exchange,
-            endpoint = &endpoint,
-            "A new binding is added"
-        );
+            info!(
+                exchange = exchange,
+                endpoint = endpoint,
+                "A new binding is added"
+            );
+        }
     }
 
     fn send_event(&self, exchange: &str, event: DbEvent) {
@@ -378,33 +458,5 @@ async fn purge_overdue_messages(shared: Arc<Shared>) {
             //wait for the next background task notification
             shared.background_task.notified().await;
         }
-    }
-}
-
-fn next_consumer<'binding>(
-    exchange: &str,
-    bindings: &'binding HashMap<String, HashSet<String>>,
-    ewl: &HashMap<String, HashMap<String, usize>>,
-) -> Option<&'binding str> {
-    if let Some(exchange_bindings) = bindings.get(exchange) {
-        let mut result: Option<&'binding str> = None;
-        let mut least_load = usize::MAX;
-        for endpoint in exchange_bindings.iter().map(|endpoint| {
-            let load = ewl
-                .get(exchange)
-                .and_then(|exchange_load| exchange_load.get(endpoint))
-                .unwrap_or(&0);
-
-            (endpoint, load)
-        }) {
-            if endpoint.1 < &least_load {
-                least_load = endpoint.1.clone();
-                result = Some(endpoint.0.as_str());
-            }
-        }
-
-        result
-    } else {
-        None
     }
 }

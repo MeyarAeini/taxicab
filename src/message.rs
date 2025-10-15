@@ -74,6 +74,12 @@ impl MessageId {
     }
 }
 
+impl AsRef<MessageId> for MessageId {
+    fn as_ref(&self) -> &MessageId {
+        self
+    }
+}
+
 impl FromStr for MessageId {
     type Err = ParseError;
 
