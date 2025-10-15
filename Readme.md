@@ -8,9 +8,11 @@ This name was more about the number first but I used the name as the application
 I remember when I was child I found a biography book about Gofrey Harold Hardy (Mathematician) in our small library. I started reading this book and I found something which amazed me and I would never forget: `A number can be so important`, Numbers have their own personality. There was a conversation in the hospital between two mathematicians about a taxicab number : **1729**.
 
 `I remember once going to see him [Ramanujan] when he was lying ill at Putney. I had ridden in taxi-cab No. 1729, and remarked that the number seemed to be rather a dull one, and that I hoped it was not an unfavourable omen. "No," he replied, "it is a very interesting number; it is the smallest number expressible as the sum of two cubes in two different ways."`
+
 [taxicab number](https://en.wikipedia.org/wiki/Taxicab_number)
 
 I always wanted to use this name for something and finally I thought this is a greate name for a message broker service. I started this project for learning purpose and exploring distibuted service developement using Rust. That does not mean this project wont be used in production one day, I'll continue improve the code quality and add different features to it. 
+
 In this project I have used [Tokio](https://tokio.rs).
 
 ## Server
