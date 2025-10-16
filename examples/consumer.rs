@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             match message {
                 taxicab::Message::Request(message) => {
                     info!(Message = message.content(), "Message received");
-                    let _ = tokio::time::sleep(Duration::from_secs(5)).await;
+                    let _ = tokio::time::sleep(Duration::from_secs(1)).await;
                     let _ = ack_sender
                         .ack(
                             message
