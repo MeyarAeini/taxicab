@@ -18,13 +18,13 @@ mod state;
 ///By using this struct, a new client to connect to the `taxicab` server will be configured and
 ///initiated.
 ///
-pub use client::{TaxicabSender, connect};
+pub use client::{MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, TaxicabClient};
 
 ///
 ///This struct is the frame of each message transported on each server/client intraction for
 ///`taxicab`
 ///
-pub use message::Message;
+pub use message::{Message, MessagePath};
 
 ///
 ///To initiate a `taxicab` server instance this method can be used

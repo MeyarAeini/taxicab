@@ -43,17 +43,39 @@ pub enum Message {
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct CommandMessage {
     message_id: MessageId,
-    content: String,
-    exchange: String,
+    pub content: String,
+    pub path: MessagePath,
+}
+
+///Represents a unique path for each message which contains
+/// - An exchange: the queue for the message
+/// - A local path the message handler local path for the client
+#[derive(Debug, Encode, Decode, Clone, Eq, Hash, PartialEq)]
+pub struct MessagePath {
+    ///The exchange
+    pub exchange: String,
+    ///The local path
+    pub local_path: String,
+}
+
+impl MessagePath {
+    ///Creates a new instance of `MessagePath`
+    pub fn new(exchange: String, local_path: String) -> Self {
+        Self {
+            exchange,
+            local_path,
+        }
+    }
+
+    ///Get the a string representing the full path for a message
+    pub fn message_type(&self) -> String {
+        format!("{}::{}", self.exchange, self.local_path)
+    }
 }
 
 impl CommandMessage {
     pub fn exchange(&self) -> &str {
-        &self.exchange
-    }
-
-    pub fn content(&self) -> &str {
-        &self.content
+        &self.path.exchange
     }
 
     pub fn message_id(&self) -> &str {
@@ -96,11 +118,11 @@ impl fmt::Display for MessageId {
 
 impl Message {
     ///Initiate a new `Message` instance by the given `exchange` and the message `body` value.
-    pub fn new_command(exchange: String, content: String) -> Self {
+    pub fn new_command(path: MessagePath, content: String) -> Self {
         Message::Request(CommandMessage {
             message_id: MessageId::new(),
             content,
-            exchange,
+            path,
         })
     }
 

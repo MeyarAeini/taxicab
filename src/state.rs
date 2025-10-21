@@ -256,7 +256,7 @@ impl Db {
 
         let state = &mut *state;
 
-        let exchange : &str= exchange.as_ref();
+        let exchange: &str = exchange.as_ref();
 
         debug!(exchange = exchange, "try to dequeue");
 
