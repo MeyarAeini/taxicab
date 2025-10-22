@@ -1,8 +1,34 @@
-use std::{error::Error, time::Duration};
+use std::{error::Error, net::SocketAddr, time::Duration};
 
-use taxicab::connect;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use taxicab::{
+    MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath, TaxicabClient,
+};
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
+
+#[derive(Serialize, Deserialize)]
+struct MyMessage {
+    content: String,
+}
+
+struct MyMessageHanler;
+
+#[async_trait]
+impl<'de> MessageHandler<'de> for MyMessageHanler {
+    type Error = anyhow::Error;
+    type Message = MyMessage;
+
+    async fn handle(&self, message: Self::Message) -> Result<(), Self::Error> {
+        info!(
+            message = message.content,
+            "A message received on the client side"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        Ok(())
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -16,41 +42,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let (message_sender, mut message_receiver) = connect("127.0.0.1:1729").await?;
+    let addr = SocketAddr::from(([127, 0, 0, 1], 1729));
+
+    let mut registry = MessageHandlerRegistry::new();
+    registry.insert(
+        MessagePath::new(format!("some-exchange"), format!("my-message")),
+        MessageHandlerAdapter::new(MyMessageHanler),
+    );
+
+    let client = TaxicabClient::new(addr, registry);
+    let _ = client.connect().await;
 
     info!("connected to the server");
-
-    let ack_sender = message_sender.clone();
-
-    tokio::spawn(async move {
-        while let Some(message) = message_receiver.recv().await {
-            match message {
-                taxicab::Message::Request(message) => {
-                    info!(Message = message.content(), "Message received");
-                    let _ = tokio::time::sleep(Duration::from_secs(1)).await;
-                    let _ = ack_sender
-                        .ack(
-                            message
-                                .message_id()
-                                .parse()
-                                .expect("failed parsing &str to MessageId"),
-                        )
-                        .await;
-                }
-                taxicab::Message::Cancellation(message_id) => {
-                    info!(
-                        message_id = message_id.to_string(),
-                        "the message processing should be canceled for"
-                    );
-                }
-                _ => {}
-            }
-        }
-    });
-
-    let exchange = "some-exchange";
-
-    message_sender.bind(exchange).await?;
 
     let _ = tokio::time::sleep(Duration::from_secs(200)).await;
 

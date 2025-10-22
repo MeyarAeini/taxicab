@@ -1,7 +1,4 @@
-use std::{
-    error::Error,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-};
+use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -44,15 +41,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1729));
-    let mut registry = MessageHandlerRegistry::new();
+    let address = SocketAddr::from(([127, 0, 0, 1], 1729));
+    let registry = MessageHandlerRegistry::new();
 
     let message_path = MessagePath::new(format!("some-exchange"), format!("my-message"));
 
-    registry.insert(
-        message_path.clone(),
-        MessageHandlerAdapter::new(MyMessageHanler),
-    );
+    //registry.insert(
+    //    message_path.clone(),
+    //    MessageHandlerAdapter::new(MyMessageHanler),
+    //);
 
     let client = TaxicabClient::new(address, registry);
 

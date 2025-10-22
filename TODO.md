@@ -4,4 +4,3 @@
   - Writing unit tests for the functionalities
   - Add documentation 
 
-- Add README.md
