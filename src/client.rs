@@ -28,32 +28,35 @@ enum ClientCommand {
     SendMessage(Message),
 }
 
-///Keep the state of a taxicab client.
-///
-///A taxicab client send a `Message` to the taxicab server using tokio `TcpStream`.
-///
-///It also receives the `Message`s from the taxicab server to process them.
-//#[derive(Clone)]
-//pub struct TaxicabSender {
-//    sender: UnboundedSender<ClientCommand>,
-//}
-
 ///The trait to be implemented for each message which we expected to receive a message for from the
 ///`taxicab` server
 #[async_trait]
 pub trait MessageHandler<'de> {
     ///The MessageHandler error type
     type Error: Into<Box<dyn Error>> + Send;
+
     ///The MessageHandler Message type
     type Message: Serialize + Deserialize<'de> + Send;
+
     ///A handler function which will be called by receiving each Message type
     async fn handle(&self, message: Self::Message) -> Result<(), Self::Error>;
 }
 
+///For sealing the `DynamicMessageHandler`
+/// - This will prevent the user of the crate to implement this trait
+/// - Also it prevent the user of the crate to call its methods
+mod private {
+    pub trait Sealed {}
+    pub struct Token;
+}
+
 #[async_trait]
-pub trait DynamicMessageHandler: Send + Sync {
-    async fn handle(&self, message: serde_json::Value) -> Result<(), Box<dyn Error>>;
-    fn get_message_type(&self) -> &'static str;
+pub trait DynamicMessageHandler: Send + Sync + private::Sealed {
+    async fn handle(
+        &self,
+        message: serde_json::Value,
+        _: private::Token,
+    ) -> Result<(), Box<dyn Error>>;
 }
 
 ///An adapter struct to register a MessageHandler dynamiclly
@@ -72,15 +75,20 @@ where
     T: Serialize + Deserialize<'de> + Send,
     MH: MessageHandler<'de, Message = T> + Send + Sync,
 {
-    ///Creates a new instance for the `MessageHandlerAdapter` with a given message type and a
-    ///hanlder
-    pub fn new(message_type: &'static str, handler: MH) -> Self {
+    ///Creates a new instance for the `MessageHandlerAdapter` for a given handler
+    pub fn new(handler: MH) -> Self {
         Self {
             handler,
-            message_type,
             phantom: PhantomData,
         }
     }
+}
+
+impl<'de, T, MH> private::Sealed for MessageHandlerAdapter<'de, T, MH>
+where
+    T: Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+    MH: MessageHandler<'de, Message = T> + Send + Sync,
+{
 }
 
 #[async_trait]
@@ -89,13 +97,13 @@ where
     T: Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     MH: MessageHandler<'de, Message = T> + Send + Sync,
 {
-    async fn handle(&self, message: serde_json::Value) -> Result<(), Box<dyn Error>> {
+    async fn handle(
+        &self,
+        message: serde_json::Value,
+        _: private::Token,
+    ) -> Result<(), Box<dyn Error>> {
         let typed_message: T = serde_json::from_value(message)?;
         self.handler.handle(typed_message).await.map_err(Into::into)
-    }
-
-    fn get_message_type(&self) -> &'static str {
-        self.message_type
     }
 }
 
@@ -318,7 +326,7 @@ impl TaxicabClient<EngineOff> {
                                 tokio::spawn(async move {
                                     tokio::select! {
                                         Ok(_) = db.handler_registry.get(&message.path)
-                                            .map(|handler| handler.handle(data))
+                                            .map(|handler| handler.handle(data,private::Token{}))
                                             .expect("The message handler is not existing or not registered")=> {
 
                                             info!(message_id = message_id.to_string(), "message processed successfully and the acknowledge has sent to the taxicab server");
