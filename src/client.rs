@@ -66,7 +66,6 @@ where
     MH: MessageHandler<'de> + Send + Sync,
 {
     handler: MH,
-    message_type: &'static str,
     phantom: PhantomData<&'de T>,
 }
 
@@ -130,13 +129,6 @@ impl MessageHandlerRegistry {
 
     fn get(&self, message_type: &MessagePath) -> Option<&Box<dyn DynamicMessageHandler>> {
         self.handlers.get(message_type)
-        //     handler.handle(data).await?;
-        // }
-
-        // //TODO
-        // //the message is unknown, probably log a trace or even propagate an error
-
-        // Ok(())
     }
 }
 
@@ -183,34 +175,7 @@ impl TaxicabClient<EngineOff> {
             state: PhantomData,
         }
     }
-
-    //pub fn with_binding<MH>(self, handler: MH) -> Self
-    //where
-    //    MH: DynamicMessageHandler + 'static,
-    //{
-    //    let mut registry = self.db.handler_registry.lock().unwrap();
-    //    registry
-    //        .insert(handler.get_message_type().to_string(), handler);
-
-    //    drop(registry);
-
-    //    self
-    //}
 }
-
-///It connect a taxicab client to the taxicab server by the given taxicab address.
-///This method return a `Result` wrapped instance of taxicab client and a channel
-///unbounded receiver instance of the `Message`s.
-///
-///This method is instrumented by the `tracing` crate so the client side code can initilize the
-///tracing and subscribe to the tracing events.
-///
-///The client uses the `tokio-util` crate to transmit Framed messages. It uses the
-///LengthDelimitedCodec.
-//#[tracing::instrument]
-//pub async fn connect(addr: &str) -> anyhow::Result<(TaxicabSender, UnboundedReceiver<Message>)> {
-//    TaxicabClient::connect(addr).await
-//}
 
 impl TaxicabClient<EngineOff> {
     ///taxicab internal command processor
@@ -342,16 +307,6 @@ impl TaxicabClient<EngineOff> {
                                 error!(Error = format!("{:#?}", e));
                             }
                         }
-                        //info!(Message = message.content, "Message received");
-                        //let _ = tokio::time::sleep(Duration::from_secs(1)).await;
-                        // let _ = ack_sender
-                        //     .ack(
-                        //         message
-                        //             .message_id()
-                        //             .parse()
-                        //             .expect("failed parsing &str to MessageId"),
-                        //     )
-                        //     .await;
                     }
                     Message::Cancellation(message_id) => {
                         let mut cancellation_signals = db.process_cancellations.lock().await;
@@ -409,25 +364,11 @@ impl TaxicabClient<Driving> {
 
         Ok(())
     }
-
-    ///Send a `Binding` request to the server
-    //pub async fn bind(&self, exchange: &str) -> anyhow::Result<()> {
-    //    let message = Message::Binding(exchange.to_string());
-
-    //    self.send_command(ClientCommand::SendMessage(message))
-    //}
-
-    ///Send an acknowledge message to the server
-    pub async fn ack(&self, message_id: MessageId) -> anyhow::Result<()> {
-        let message = Message::Ack(message_id);
-
-        self.send_command(ClientCommand::SendMessage(message))
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    //use super::*;
 
     #[tokio::test]
     async fn client_test() {

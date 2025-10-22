@@ -47,23 +47,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1729));
     let mut registry = MessageHandlerRegistry::new();
 
+    let message_path = MessagePath::new(format!("some-exchange"), format!("my-message"));
+
     registry.insert(
-        MessagePath::new(format!("some-exchange"), format!("my-message")),
-        MessageHandlerAdapter::new("some-exchange::my-message", MyMessageHanler),
+        message_path.clone(),
+        MessageHandlerAdapter::new(MyMessageHanler),
     );
 
     let client = TaxicabClient::new(address, registry);
 
     if let Ok(client) = client.connect().await {
         loop {
-            let message_path = MessagePath::new(format!("some-exchange"), format!("my-message"));
             let _ = client
                 .send(
                     &serde_json::to_string(&MyMessage {
                         content: format!("hi there!"),
                     })
                     .unwrap(),
-                    message_path,
+                    message_path.clone(),
                 )
                 .await;
 
