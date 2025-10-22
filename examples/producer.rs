@@ -58,15 +58,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if let Ok(client) = client.connect().await {
         loop {
-            let _ = client
-                .send(
-                    &serde_json::to_string(&MyMessage {
-                        content: format!("hi there!"),
-                    })
-                    .unwrap(),
-                    message_path.clone(),
-                )
-                .await;
+            let message = MyMessage {
+                content: format!("hi there!"),
+            };
+            let _ = client.send(&message, message_path.clone()).await;
 
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }

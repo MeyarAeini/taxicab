@@ -351,8 +351,8 @@ impl TaxicabClient<Driving> {
     ///
     ///This method uses the taxicab internal Command channel to pass the message to the taxicab tcp
     ///stream.
-    pub async fn send(&self, message: &str, path: MessagePath) -> anyhow::Result<()> {
-        let message = Message::new_command(path, message.to_string());
+    pub async fn send<M: Serialize>(&self, message: &M, path: MessagePath) -> anyhow::Result<()> {
+        let message = Message::new_command(path, serde_json::to_string(message)?);
         self.send_command(ClientCommand::SendMessage(message))
     }
 
