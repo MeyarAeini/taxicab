@@ -3,28 +3,62 @@ use std::{error::Error, net::SocketAddr, time::Duration};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath, TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath,
+    TaxicabClient,
 };
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Serialize, Deserialize)]
-struct MyMessage {
+struct SalesMessage {
+    no: i32,
+    name: String,
+    price: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestMessage {
     content: String,
 }
 
-struct MyMessageHanler;
+struct TestMessageHandler;
+
+fn get_randoms() -> (i32, f64) {
+    use rand::prelude::*;
+
+    let mut rng = rand::rng();
+
+    (rng.random::<i32>(), rng.random::<f64>())
+}
 
 #[async_trait]
-impl<'de> MessageHandler<'de> for MyMessageHanler {
+impl<'de> MessageHandler<'de> for TestMessageHandler {
     type Error = anyhow::Error;
-    type Message = MyMessage;
+    type Message = TestMessage;
 
-    async fn handle(&self, message: Self::Message) -> Result<(), Self::Error> {
+    async fn handle(
+        &self,
+        taxicab: &TaxicabClient<Driving>,
+        message: Self::Message,
+    ) -> Result<(), Self::Error> {
         info!(
             message = message.content,
             "A message received on the client side"
         );
+
+        let (no, price) = get_randoms();
+
+        let _ = taxicab
+            .send(
+                &SalesMessage {
+                    no,
+                    name: message.content,
+                    price,
+                },
+                MessagePath::new(format!("Sales"), format!("ProductSoldCommand")),
+            )
+            .await;
+
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         Ok(())
     }
@@ -46,8 +80,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut registry = MessageHandlerRegistry::new();
     registry.insert(
-        MessagePath::new(format!("some-exchange"), format!("my-message")),
-        MessageHandlerAdapter::new(MyMessageHanler),
+        MessagePath::new(format!("producer"), format!("test-message")),
+        MessageHandlerAdapter::new(TestMessageHandler),
     );
 
     let client = TaxicabClient::new(addr, registry);

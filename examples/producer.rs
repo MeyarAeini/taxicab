@@ -1,31 +1,45 @@
-use std::{error::Error, net::SocketAddr};
+use std::{error::Error, fmt::format, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath, TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath,
+    TaxicabClient,
 };
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Serialize, Deserialize)]
-struct MyMessage {
+struct ProducerMessage {
     content: String,
 }
 
-struct MyMessageHanler;
+#[derive(Serialize, Deserialize)]
+struct SalesMessage {
+    no: i32,
+    name: String,
+    price: f64,
+}
+
+struct SalesMessageHandler;
 
 #[async_trait]
-impl<'de> MessageHandler<'de> for MyMessageHanler {
+impl<'de> MessageHandler<'de> for SalesMessageHandler {
     type Error = anyhow::Error;
-    type Message = MyMessage;
+    type Message = SalesMessage;
 
-    async fn handle(&self, message: Self::Message) -> Result<(), Self::Error> {
+    async fn handle(
+        &self,
+        _: &TaxicabClient<Driving>,
+        message: Self::Message,
+    ) -> Result<(), Self::Error> {
         info!(
-            message = message.content,
-            "A message received on the client side"
+            no = message.no,
+            name = message.name,
+            price = message.price,
+            "Received a sales message"
         );
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         Ok(())
     }
 }
@@ -42,23 +56,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let address = SocketAddr::from(([127, 0, 0, 1], 1729));
-    let registry = MessageHandlerRegistry::new();
+    let mut registry = MessageHandlerRegistry::new();
 
-    let message_path = MessagePath::new(format!("some-exchange"), format!("my-message"));
-
-    //registry.insert(
-    //    message_path.clone(),
-    //    MessageHandlerAdapter::new(MyMessageHanler),
-    //);
+    registry.insert(
+        MessagePath::new(format!("Sales"), format!("ProductSoldCommand")),
+        MessageHandlerAdapter::new(SalesMessageHandler),
+    );
 
     let client = TaxicabClient::new(address, registry);
 
     if let Ok(client) = client.connect().await {
         loop {
-            let message = MyMessage {
+            let message = ProducerMessage {
                 content: format!("hi there!"),
             };
-            let _ = client.send(&message, message_path.clone()).await;
+            let _ = client
+                .send(
+                    &message,
+                    MessagePath::new(format!("producer"), format!("test-message")),
+                )
+                .await;
 
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }

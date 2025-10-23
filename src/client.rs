@@ -39,7 +39,11 @@ pub trait MessageHandler<'de> {
     type Message: Serialize + Deserialize<'de> + Send;
 
     ///A handler function which will be called by receiving each Message type
-    async fn handle(&self, message: Self::Message) -> Result<(), Self::Error>;
+    async fn handle(
+        &self,
+        taxicab: &TaxicabClient<Driving>,
+        message: Self::Message,
+    ) -> Result<(), Self::Error>;
 }
 
 ///For sealing the `DynamicMessageHandler`
@@ -54,6 +58,7 @@ mod private {
 pub trait DynamicMessageHandler: Send + Sync + private::Sealed {
     async fn handle(
         &self,
+        taxicab: Arc<TaxicabClient<Driving>>,
         message: serde_json::Value,
         _: private::Token,
     ) -> Result<(), Box<dyn Error>>;
@@ -98,11 +103,15 @@ where
 {
     async fn handle(
         &self,
+        taxicab: Arc<TaxicabClient<Driving>>,
         message: serde_json::Value,
         _: private::Token,
     ) -> Result<(), Box<dyn Error>> {
         let typed_message: T = serde_json::from_value(message)?;
-        self.handler.handle(typed_message).await.map_err(Into::into)
+        self.handler
+            .handle(&*taxicab, typed_message)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -221,7 +230,7 @@ impl TaxicabClient<EngineOff> {
     ///
     ///The client uses the `tokio-util` crate to transmit Framed messages. It uses the
     ///LengthDelimitedCodec.
-    pub async fn connect(self) -> anyhow::Result<TaxicabClient<Driving>> {
+    pub async fn connect(self) -> anyhow::Result<Arc<TaxicabClient<Driving>>> {
         //initilize a TcpStream connected to the taxicab server
         let stream = TcpStream::connect(self.address).await?;
 
@@ -275,6 +284,13 @@ impl TaxicabClient<EngineOff> {
         //it here instead of cloning it
         let db = self.db.clone();
         let internal_command_sender = taxicab_command_sender.clone();
+        let client: Arc<TaxicabClient<Driving>> = Arc::new(TaxicabClient {
+            db: self.db,
+            address: self.address,
+            sender: Some(taxicab_command_sender),
+            state: PhantomData,
+        });
+        let internal_client = client.clone();
         tokio::spawn(async move {
             while let Some(message) = rx_receiver.recv().await {
                 match message {
@@ -288,10 +304,11 @@ impl TaxicabClient<EngineOff> {
                                 let db = db.clone();
                                 let command_sender = internal_command_sender.clone();
                                 let message_id = message.id().clone();
+                                let taxicab = internal_client.clone();
                                 tokio::spawn(async move {
                                     tokio::select! {
                                         Ok(_) = db.handler_registry.get(&message.path)
-                                            .map(|handler| handler.handle(data,private::Token{}))
+                                            .map(|handler| handler.handle(taxicab,data,private::Token{}))
                                             .expect("The message handler is not existing or not registered")=> {
 
                                             info!(message_id = message_id.to_string(), "message processed successfully and the acknowledge has sent to the taxicab server");
@@ -323,12 +340,7 @@ impl TaxicabClient<EngineOff> {
             }
         });
 
-        Ok(TaxicabClient {
-            db: self.db,
-            address: self.address,
-            sender: Some(taxicab_command_sender),
-            state: PhantomData,
-        })
+        Ok(client)
     }
 
     fn send_exchange_bindings_to_server(&self, command_sender: UnboundedSender<ClientCommand>) {
