@@ -60,24 +60,51 @@ cargo r --example producer
 You can also write your own message producer like the following example.
 
 ```rust
-use std::{
-    error::Error,
-    net::SocketAddr,
-};
+use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    MessageHandler, MessageHandlerRegistry, MessagePath, TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
+use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Serialize, Deserialize)]
-struct MyMessage {
+struct ProducerMessage {
     content: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SalesMessage {
+    no: i32,
+    name: String,
+    price: f64,
+}
+
+struct SalesMessageHandler;
+
+#[async_trait]
+impl<'de> MessageHandler<'de> for SalesMessageHandler {
+    type Error = anyhow::Error;
+    type Message = SalesMessage;
+
+    async fn handle(
+        &self,
+        _: &TaxicabClient<Driving>,
+        message: Self::Message,
+    ) -> Result<(), Self::Error> {
+        info!(
+            no = message.no,
+            name = message.name,
+            price = message.price,
+            "Received a sales message"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // a builder for `FmtSubscriber`.
@@ -91,23 +118,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let address = SocketAddr::from(([127, 0, 0, 1], 1729));
-    let registry = MessageHandlerRegistry::new();
 
-    let message_path = MessagePath::new(format!("some-exchange"), format!("my-message"));
+    let _ = TaxicabBuilder::new(address)
+        .with_task(move |taxicab| {
+            Box::pin(async move {
+                loop {
+                    let message = ProducerMessage {
+                        content: format!("hi there!"),
+                    };
+                    let _ = taxicab
+                        .send(
+                            &message,
+                            MessagePath::new(format!("producer"), format!("test-message")),
+                        )
+                        .await;
 
-    let client = TaxicabClient::new(address, registry);
-
-    if let Ok(client) = client.connect().await {
-        loop {
-            let message = MyMessage {
-                content: format!("hi there!"),
-            };
-            let _ = client.send(&message, message_path.clone()).await;
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    }
-
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            })
+        })
+        .with_handler(
+            MessagePath {
+                exchange: format!("Sales"),
+                local_path: format!("ProductSoldCommand"),
+            },
+            MessageHandlerAdapter::new(SalesMessageHandler),
+        )
+        .connect(ctrl_c())
+        .await;
     info!("going to shutdown");
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -130,28 +168,62 @@ use std::{error::Error, net::SocketAddr, time::Duration};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath, TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
+use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Serialize, Deserialize)]
-struct MyMessage {
+struct SalesMessage {
+    no: i32,
+    name: String,
+    price: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestMessage {
     content: String,
 }
 
-struct MyMessageHanler;
+struct TestMessageHandler;
+
+fn get_randoms() -> (i32, f64) {
+    use rand::prelude::*;
+
+    let mut rng = rand::rng();
+
+    (rng.random::<i32>(), rng.random::<f64>())
+}
 
 #[async_trait]
-impl<'de> MessageHandler<'de> for MyMessageHanler {
+impl<'de> MessageHandler<'de> for TestMessageHandler {
     type Error = anyhow::Error;
-    type Message = MyMessage;
+    type Message = TestMessage;
 
-    async fn handle(&self, message: Self::Message) -> Result<(), Self::Error> {
+    async fn handle(
+        &self,
+        taxicab: &TaxicabClient<Driving>,
+        message: Self::Message,
+    ) -> Result<(), Self::Error> {
         info!(
             message = message.content,
             "A message received on the client side"
         );
+
+        let (no, price) = get_randoms();
+
+        let _ = taxicab
+            .send(
+                &SalesMessage {
+                    no,
+                    name: message.content,
+                    price,
+                },
+                MessagePath::new(format!("Sales"), format!("ProductSoldCommand")),
+            )
+            .await;
+
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         Ok(())
     }
@@ -171,14 +243,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 1729));
 
-    let mut registry = MessageHandlerRegistry::new();
-    registry.insert(
-        MessagePath::new(format!("some-exchange"), format!("my-message")),
-        MessageHandlerAdapter::new(MyMessageHanler),
-    );
-
-    let client = TaxicabClient::new(addr, registry);
-    let _ = client.connect().await;
+    let _ = TaxicabBuilder::new(addr)
+        .with_handler(
+            MessagePath::new(format!("producer"), format!("test-message")),
+            MessageHandlerAdapter::new(TestMessageHandler),
+        )
+        .connect(ctrl_c())
+        .await;
 
     info!("connected to the server");
 

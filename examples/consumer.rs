@@ -3,9 +3,9 @@ use std::{error::Error, net::SocketAddr, time::Duration};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    Driving, MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath,
-    TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
+use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -78,14 +78,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 1729));
 
-    let mut registry = MessageHandlerRegistry::new();
-    registry.insert(
-        MessagePath::new(format!("producer"), format!("test-message")),
-        MessageHandlerAdapter::new(TestMessageHandler),
-    );
-
-    let client = TaxicabClient::new(addr, registry);
-    let _ = client.connect().await;
+    let _ = TaxicabBuilder::new(addr)
+        .with_handler(
+            MessagePath::new(format!("producer"), format!("test-message")),
+            MessageHandlerAdapter::new(TestMessageHandler),
+        )
+        .connect(ctrl_c())
+        .await;
 
     info!("connected to the server");
 

@@ -1,11 +1,11 @@
-use std::{error::Error, fmt::format, net::SocketAddr};
+use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    Driving, MessageHandler, MessageHandlerAdapter, MessageHandlerRegistry, MessagePath,
-    TaxicabClient,
+    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
+use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -56,31 +56,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let address = SocketAddr::from(([127, 0, 0, 1], 1729));
-    let mut registry = MessageHandlerRegistry::new();
 
-    registry.insert(
-        MessagePath::new(format!("Sales"), format!("ProductSoldCommand")),
-        MessageHandlerAdapter::new(SalesMessageHandler),
-    );
+    let _ = TaxicabBuilder::new(address)
+        .with_task(move |taxicab| {
+            Box::pin(async move {
+                loop {
+                    let message = ProducerMessage {
+                        content: format!("hi there!"),
+                    };
+                    let _ = taxicab
+                        .send(
+                            &message,
+                            MessagePath::new(format!("producer"), format!("test-message")),
+                        )
+                        .await;
 
-    let client = TaxicabClient::new(address, registry);
-
-    if let Ok(client) = client.connect().await {
-        loop {
-            let message = ProducerMessage {
-                content: format!("hi there!"),
-            };
-            let _ = client
-                .send(
-                    &message,
-                    MessagePath::new(format!("producer"), format!("test-message")),
-                )
-                .await;
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    }
-
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            })
+        })
+        .with_handler(
+            MessagePath {
+                exchange: format!("Sales"),
+                local_path: format!("ProductSoldCommand"),
+            },
+            MessageHandlerAdapter::new(SalesMessageHandler),
+        )
+        .connect(ctrl_c())
+        .await;
     info!("going to shutdown");
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
