@@ -16,9 +16,9 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::{
     Message,
-    message::{self, CommandMessage, MessageId, MessagePath},
+    message::{CommandMessage, MessageId, MessagePath},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ pub trait MessageHandler<'de> {
     ///A handler function which will be called by receiving each Message type
     async fn handle(
         &self,
-        taxicab: &TaxicabClient<Driving>,
+        taxicab: &TaxicabClient,
         message: Self::Message,
     ) -> Result<(), Self::Error>;
 }
@@ -55,7 +55,7 @@ mod private {
 pub trait DynamicMessageHandler: Send + Sync + private::Sealed {
     async fn handle(
         &self,
-        taxicab: Arc<TaxicabClient<Driving>>,
+        taxicab: Arc<TaxicabClient>,
         message: serde_json::Value,
         _: private::Token,
     ) -> Result<(), Box<dyn Error>>;
@@ -100,7 +100,7 @@ where
 {
     async fn handle(
         &self,
-        taxicab: Arc<TaxicabClient<Driving>>,
+        taxicab: Arc<TaxicabClient>,
         message: serde_json::Value,
         _: private::Token,
     ) -> Result<(), Box<dyn Error>> {
@@ -112,49 +112,15 @@ where
     }
 }
 
-///The message registry to hold the message handlers and routing paths mappings
-//pub struct MessageHandlerRegistry {
-//}
-
-//impl MessageHandlerRegistry {
-//    ///Initilize a `MessagHandlerRegistry` object
-//    pub fn new() -> Self {
-//        Self {
-//            handlers: HashMap::new(),
-//        }
-//    }
-//
-//    ///add a message handler path mapping
-//    pub fn insert<MH>(&mut self, path: MessagePath, handler: MH)
-//    where
-//        MH: DynamicMessageHandler + 'static,
-//    {
-//        self.handlers.insert(path, Box::new(handler));
-//    }
-//
-//    fn get(&self, message_type: &MessagePath) -> Option<&Box<dyn DynamicMessageHandler>> {
-//        self.handlers.get(message_type)
-//    }
-//}
-
-///Represents the `taxicab` client not connected status, in this state only is possible to set the
-///taxicab client up and can not sent or receive any messages to the server
-pub struct EngineOff;
-
-///Represents the `taxicab` client connected status, in this state you can sent and receive
-///messages from the `taxicab` server
-pub struct Driving;
-
 #[derive(Clone)]
 pub(crate) struct ShutdownData;
 
 ///The taxicab client, this object can initilize the connection with the taxicab server. Also it
 ///holds the client state such as message handler refrences and the cancellation tokens
-pub struct TaxicabClient<State = EngineOff> {
+pub struct TaxicabClient {
     //address: SocketAddr,
     db: Db,
     sender: Option<UnboundedSender<Message>>,
-    state: PhantomData<State>,
 }
 
 type MessageHandlerRegistry = HashMap<MessagePath, Box<dyn DynamicMessageHandler>>;
@@ -185,7 +151,7 @@ impl TaxicabBuilder {
     pub fn with_task<T>(mut self, task: T) -> Self
     where
         T: Fn(
-                Arc<TaxicabClient<Driving>>,
+                Arc<TaxicabClient>,
             )
                 -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send>>> + Send>>
             + Send
@@ -221,7 +187,7 @@ impl TaxicabBuilder {
 struct DynamicTaxicabTask {
     task: Box<
         dyn Fn(
-                Arc<TaxicabClient<Driving>>,
+                Arc<TaxicabClient>,
             )
                 -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send>>> + Send>>
             + Send
@@ -233,9 +199,9 @@ struct DynamicTaxicabTask {
 impl TaxicabTask for DynamicTaxicabTask {
     async fn run<C>(
         &mut self,
-        taxicab: Arc<TaxicabClient<Driving>>,
-        cancel: C,
-        shutdown_complete:UnboundedSender<()>,
+        taxicab: Arc<TaxicabClient>,
+        _cancel: C,
+        _shutdown_complete:UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
     where
         C: Fn() -> Receiver<ShutdownData> + Send + Sync,
@@ -248,7 +214,7 @@ impl TaxicabTask for DynamicTaxicabTask {
 trait TaxicabTask: Send + Sync {
     async fn run<C>(
         &mut self,
-        taxicab: Arc<TaxicabClient<Driving>>,
+        taxicab: Arc<TaxicabClient>,
         cancel: C,
         shutdown_complete:UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
@@ -261,7 +227,7 @@ struct TaxicabMessageReceiverTask {
 }
 
 struct TaxicabCommandHandler {
-    taxicab: Arc<TaxicabClient<Driving>>,
+    taxicab: Arc<TaxicabClient>,
     command: CommandMessage,
     cancel: Receiver<ShutdownData>,
     //A mscp sender to be droped after everything done to let the receive now that everything is
@@ -271,7 +237,7 @@ struct TaxicabCommandHandler {
 
 impl TaxicabCommandHandler {
     fn new(
-        taxicab: Arc<TaxicabClient<Driving>>,
+        taxicab: Arc<TaxicabClient>,
         command: CommandMessage,
         cancel: Receiver<ShutdownData>,
         shutdown_complete:UnboundedSender<()>
@@ -343,18 +309,13 @@ impl TaxicabMessageReceiverTask {
 impl TaxicabTask for TaxicabMessageReceiverTask {
     async fn run<C>(
         &mut self,
-        taxicab: Arc<TaxicabClient<Driving>>,
+        taxicab: Arc<TaxicabClient>,
         cancel: C,
         shutdown_complete: UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
     where
         C: Fn() -> Receiver<ShutdownData> + Sync + Send,
     {
-        //I guess here the db better to be an option so i would be able to take it out and consume
-        //it here instead of cloning it
-        //let db = taxicab.db.clone();
-
-        //loop {
         if let Some(mut receiver) = self.receiver.take() {
             while let Some(message) = receiver.recv().await {
                 match message {
@@ -381,11 +342,8 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
             }
         }
         Ok(())
-        //}
     }
 }
-
-//type TaxicabTask = Box<dyn Fn(&TaxicabClient<Driving>, impl Future) -> Pin<Box<dyn Future<Output = ()>+ Send> + Send + Sync>>;
 
 #[derive(Clone)]
 struct Db {
@@ -402,17 +360,6 @@ impl Db {
     }
 }
 
-//impl TaxicabClient<EngineOff> {
-//    ///Initilize a `taxicab` client object with the given `taxicab` server socket address and the
-//    ///message handlers registry
-//    pub fn new(builder: TaxicabBuilder) -> TaxicabClient<EngineOff> {
-//        Self {
-//            db: Db::new(builder.handlers),
-//            sender: None,
-//            state: PhantomData,
-//        }
-//    }
-//}
 
 struct TaxicabTransport;
 
@@ -496,10 +443,9 @@ impl TaxicabBuilder {
         let (tx, rx) = TaxicabTransport::connect(self.address, tx_shutdown.subscribe()).await?;
 
         Self::send_exchange_bindings_to_server(self.handlers.keys(), tx.clone());
-        let client: Arc<TaxicabClient<Driving>> = Arc::new(TaxicabClient {
+        let client: Arc<TaxicabClient> = Arc::new(TaxicabClient {
             db: Db::new(self.handlers),
             sender: Some(tx),
-            state: PhantomData,
         });
 
 
@@ -573,7 +519,7 @@ impl TaxicabBuilder {
     }
 }
 
-impl TaxicabClient<Driving> {
+impl TaxicabClient {
     fn spawn<T, C>(self: Arc<Self>, mut task: T, cancel: C, shutdown_complete:UnboundedSender<()>) -> JoinHandle<()>
     where
         T: TaxicabTask + Send + Sync + 'static,
@@ -594,86 +540,6 @@ impl TaxicabClient<Driving> {
             }
         })
     }
-    // fn host_message_receiver(
-    //     self: Arc<Self>,
-    //     mut rx: UnboundedReceiver<Message>,
-    // ) -> JoinHandle<anyhow::Result<()>> {
-    //     let mut shutdown_rx = self
-    //         .shutdown_tx
-    //         .as_ref()
-    //         .expect("The shutdown sender must have value")
-    //         .subscribe();
-
-    //     //I guess here the db better to be an option so i would be able to take it out and consume
-    //     //it here instead of cloning it
-    //     let db = self.db.clone();
-
-    //     tokio::spawn(async move {
-    //         loop {
-    //             tokio::select! {
-    //                 Some(message) = rx.recv() => {
-    //                     match message {
-    //                         Message::Request(message) => {
-    //                             let (cancelation_sender, mut cancelation_receiver) = watch::channel(false);
-    //                             let mut cancellation_signals = db.process_cancellations.lock().await;
-    //                             cancellation_signals.insert(message.id().clone(), cancelation_sender);
-    //                             drop(cancellation_signals);
-    //                             match serde_json::from_str(&message.content) {
-    //                                 Ok(data) => {
-    //                                     let db = db.clone();
-    //                                     let command_sender = self.sender.clone().expect("sender must have value");
-    //                                     let message_id = message.id().clone();
-    //                                     let taxicab = self.clone();
-
-    //                                     let mut shutdown_rx = taxicab.shutdown_tx.as_ref().expect("The shutdown sender must have value").subscribe();
-    //                                     tokio::spawn(async move {
-    //                                         tokio::select! {
-    //                                             Ok(_) = db.handler_registry.get(&message.path)
-    //                                                 .map(|handler| handler.handle(taxicab,data,private::Token{}))
-    //                                                 .expect("The message handler is not existing or not registered")=> {
-
-    //                                                 info!(message_id = message_id.to_string(), "message processed successfully and the acknowledge has sent to the taxicab server");
-    //                                                let _ = command_sender.send(Message::Ack(message_id));
-    //                                             }
-    //                                             _ = cancelation_receiver.changed() => {
-    //                                                 warn!(message_id = message_id.to_string(), "The message timeouted and canceled by the server signal");
-    //                                             }
-
-    //                                             _ = shutdown_rx.recv() => {
-    //                                                 info!(message_id = message_id.to_string() ,"Received the shutdown signal, discarding all processes");
-    //                                             }
-    //                                         }
-    //                                     });
-    //                                 }
-    //                                 Err(e) => {
-    //                                     error!(Error = format!("{:#?}", e));
-    //                                 }
-    //                             }
-    //                         }
-    //                         Message::Cancellation(message_id) => {
-    //                             let mut cancellation_signals = db.process_cancellations.lock().await;
-    //                             cancellation_signals
-    //                                 .remove(&message_id)
-    //                                 .map(|signal| signal.send(true));
-    //                             info!(
-    //                                 message_id = message_id.to_string(),
-    //                                 "the message processing should be canceled. the cancelation signal is sent."
-    //                             );
-    //                         }
-    //                         _ => {unreachable!()} //all other messages should not be received here
-    //                     }
-    //                 }
-
-    //                 _ = shutdown_rx.recv() => {
-    //                     info!("Received the shutdown signal, discarding all processes");
-    //                     break;
-    //                 }
-    //             }
-    //         }
-
-    //         Ok(())
-    //     })
-    // }
 
     ///Send a string slice message to the taxicab server.
     ///

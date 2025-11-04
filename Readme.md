@@ -65,7 +65,7 @@ use std::{error::Error, net::SocketAddr};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
+    MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
@@ -92,7 +92,7 @@ impl<'de> MessageHandler<'de> for SalesMessageHandler {
 
     async fn handle(
         &self,
-        _: &TaxicabClient<Driving>,
+        _: &TaxicabClient,
         message: Self::Message,
     ) -> Result<(), Self::Error> {
         info!(
@@ -148,8 +148,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await;
     info!("going to shutdown");
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
     Ok(())
 }
 ```
@@ -163,12 +161,12 @@ cargo r --example consumer
 You can also write your own message consumer like the following example.
 
 ```rust
-use std::{error::Error, net::SocketAddr, time::Duration};
+use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
+    MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
@@ -203,7 +201,7 @@ impl<'de> MessageHandler<'de> for TestMessageHandler {
 
     async fn handle(
         &self,
-        taxicab: &TaxicabClient<Driving>,
+        taxicab: &TaxicabClient,
         message: Self::Message,
     ) -> Result<(), Self::Error> {
         info!(
@@ -250,10 +248,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .connect(ctrl_c())
         .await;
-
-    info!("connected to the server");
-
-    let _ = tokio::time::sleep(Duration::from_secs(200)).await;
 
     info!("going to shutdown");
 

@@ -3,7 +3,7 @@ use std::{error::Error, net::SocketAddr};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use taxicab::{
-    Driving, MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
+    MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
 };
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
@@ -30,7 +30,7 @@ impl<'de> MessageHandler<'de> for SalesMessageHandler {
 
     async fn handle(
         &self,
-        _: &TaxicabClient<Driving>,
+        _: &TaxicabClient,
         message: Self::Message,
     ) -> Result<(), Self::Error> {
         info!(
@@ -85,8 +85,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .connect(ctrl_c())
         .await;
     info!("going to shutdown");
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     Ok(())
 }
