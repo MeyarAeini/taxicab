@@ -201,7 +201,7 @@ impl TaxicabTask for DynamicTaxicabTask {
         &mut self,
         taxicab: Arc<TaxicabClient>,
         _cancel: C,
-        _shutdown_complete:UnboundedSender<()>,
+        _shutdown_complete: UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
     where
         C: Fn() -> Receiver<ShutdownData> + Send + Sync,
@@ -216,7 +216,7 @@ trait TaxicabTask: Send + Sync {
         &mut self,
         taxicab: Arc<TaxicabClient>,
         cancel: C,
-        shutdown_complete:UnboundedSender<()>,
+        shutdown_complete: UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
     where
         C: Fn() -> Receiver<ShutdownData> + Sync + Send;
@@ -240,18 +240,17 @@ impl TaxicabCommandHandler {
         taxicab: Arc<TaxicabClient>,
         command: CommandMessage,
         cancel: Receiver<ShutdownData>,
-        shutdown_complete:UnboundedSender<()>
+        shutdown_complete: UnboundedSender<()>,
     ) -> Self {
         Self {
             taxicab,
             command,
             cancel,
-            _shutdown_complete:shutdown_complete,
+            _shutdown_complete: shutdown_complete,
         }
     }
 
     async fn run(mut self) -> Result<(), Box<dyn Error + Send>> {
-
         //Create a cancelation signal for each command to be kept , in case the server directly
         //order to cancel the command if still is running , the signal will be trigerd and tokio
         //selec! will stop the ongoing process.
@@ -320,9 +319,14 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
             while let Some(message) = receiver.recv().await {
                 match message {
                     Message::Request(message) => {
-                        TaxicabCommandHandler::new(taxicab.clone(), message, cancel(),shutdown_complete.clone())
-                            .run()
-                            .await?
+                        TaxicabCommandHandler::new(
+                            taxicab.clone(),
+                            message,
+                            cancel(),
+                            shutdown_complete.clone(),
+                        )
+                        .run()
+                        .await?
                     }
                     Message::Cancellation(message_id) => {
                         let mut cancellation_signals =
@@ -360,14 +364,13 @@ impl Db {
     }
 }
 
-
 struct TaxicabTransport;
 
 impl TaxicabTransport {
     async fn connect(
         addr: SocketAddr,
         mut shutdown: Receiver<ShutdownData>,
-    ) -> anyhow::Result<(UnboundedSender<Message>,UnboundedReceiver<Message>)>{
+    ) -> anyhow::Result<(UnboundedSender<Message>, UnboundedReceiver<Message>)> {
         //initilize a TcpStream connected to the taxicab server
         let stream = TcpStream::connect(addr).await?;
 
@@ -420,7 +423,7 @@ impl TaxicabTransport {
             }
         });
 
-        Ok(( tx_sender,rx_receiver))
+        Ok((tx_sender, rx_receiver))
     }
 }
 
@@ -435,7 +438,6 @@ impl TaxicabBuilder {
     ///The client uses the `tokio-util` crate to transmit Framed messages. It uses the
     ///LengthDelimitedCodec.
     pub async fn connect(self, shutdown: impl Future) -> Result<(), Box<dyn Error>> {
-
         let (tx_shutdown, _) = tokio::sync::broadcast::channel(16);
 
         //TODO: the connect should get a closure for receiving a message and return the Self to be
@@ -448,24 +450,25 @@ impl TaxicabBuilder {
             sender: Some(tx),
         });
 
-
-        let (tx_shutdown_complete, mut rx_shutdown_complete) = tokio::sync::mpsc::unbounded_channel::<()>();
-
+        let (tx_shutdown_complete, mut rx_shutdown_complete) =
+            tokio::sync::mpsc::unbounded_channel::<()>();
 
         let mut tasks = Vec::new();
 
         let shutdown_receiver = tx_shutdown.clone();
-        tasks.push(
-            client
-                .clone()
-                .spawn(TaxicabMessageReceiverTask::new(rx), move || {
-                    shutdown_receiver.subscribe()
-                }, tx_shutdown_complete.clone())
-        );
+        tasks.push(client.clone().spawn(
+            TaxicabMessageReceiverTask::new(rx),
+            move || shutdown_receiver.subscribe(),
+            tx_shutdown_complete.clone(),
+        ));
 
         for task in self.tasks {
             let shutdown = tx_shutdown.clone();
-            tasks.push(client.clone().spawn(task, move || shutdown.subscribe(),tx_shutdown_complete.clone()));
+            tasks.push(client.clone().spawn(
+                task,
+                move || shutdown.subscribe(),
+                tx_shutdown_complete.clone(),
+            ));
         }
 
         tokio::select! {
@@ -491,11 +494,7 @@ impl TaxicabBuilder {
         //receive None
         drop(tx_shutdown_complete);
 
-
-        //TODO : put a mechanism in place to ensure the broadcasted signal are received and all
-        //task and handlers are stoped working
-        //tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
+        //drop the shutdown brodcast sender
         drop(tx_shutdown);
 
         let _ = rx_shutdown_complete.recv().await;
@@ -520,7 +519,12 @@ impl TaxicabBuilder {
 }
 
 impl TaxicabClient {
-    fn spawn<T, C>(self: Arc<Self>, mut task: T, cancel: C, shutdown_complete:UnboundedSender<()>) -> JoinHandle<()>
+    fn spawn<T, C>(
+        self: Arc<Self>,
+        mut task: T,
+        cancel: C,
+        shutdown_complete: UnboundedSender<()>,
+    ) -> JoinHandle<()>
     where
         T: TaxicabTask + Send + Sync + 'static,
         C: Fn() -> Receiver<ShutdownData> + Send + Sync + 'static,

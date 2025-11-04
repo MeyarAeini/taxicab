@@ -2,9 +2,7 @@ use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use taxicab::{
-    MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
-};
+use taxicab::{MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient};
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
@@ -28,11 +26,7 @@ impl<'de> MessageHandler<'de> for SalesMessageHandler {
     type Error = anyhow::Error;
     type Message = SalesMessage;
 
-    async fn handle(
-        &self,
-        _: &TaxicabClient,
-        message: Self::Message,
-    ) -> Result<(), Self::Error> {
+    async fn handle(&self, _: &TaxicabClient, message: Self::Message) -> Result<(), Self::Error> {
         info!(
             no = message.no,
             name = message.name,
