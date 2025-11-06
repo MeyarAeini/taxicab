@@ -2,7 +2,7 @@ use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use taxicab::{MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient};
+use taxicab::{MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient, TaxicabHandlerProfile};
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _ = TaxicabBuilder::new(addr)
         .with_handler(
             MessagePath::new(format!("producer"), format!("test-message")),
-            MessageHandlerAdapter::new(TestMessageHandler),
+            TaxicabHandlerProfile::new(MessageHandlerAdapter::new(TestMessageHandler)),
         )
         .connect(ctrl_c())
         .await;

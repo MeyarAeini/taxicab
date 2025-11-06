@@ -123,7 +123,7 @@ pub struct TaxicabClient {
     sender: Option<UnboundedSender<Message>>,
 }
 
-type MessageHandlerRegistry = HashMap<MessagePath, Box<dyn DynamicMessageHandler>>;
+type MessageHandlerRegistry = HashMap<MessagePath, TaxicabHandlerProfile>;
 
 ///The `taxicab` builder
 ///
@@ -135,6 +135,39 @@ pub struct TaxicabBuilder {
     tasks: Vec<DynamicTaxicabTask>,
     shutdown: Option<Pin<Box<dyn Future<Output = Option<()>>>>>,
 }
+
+///The taxicab handler profile
+///
+///It holds the information about the handlers and their configurations such as max concurrency
+///level in the current taxicab client
+pub struct TaxicabHandlerProfile{
+    handler: Box<dyn DynamicMessageHandler>,
+    max_concurrency: u16,
+}
+
+impl TaxicabHandlerProfile{
+    ///Creates a new `TaxicabHanlderProfile` with a given handler
+    ///
+    ///This method will set the `max concurrency level` of this handler to `1` , meaning only one
+    ///message will be fed to this handler at a time. For chanching this configuration you might use
+    ///`with_max_concurrency` method.
+    pub fn new<MH>(handler:MH) -> Self
+        where MH: DynamicMessageHandler + 'static{
+            Self{
+                handler:Box::new(handler),
+                max_concurrency:1,
+            }
+    }
+
+    ///Sets the max concurrency level of the taxcab message handler.
+    pub fn with_max_concurreny(mut self, max_concurrency:u16) -> Self{
+        self.max_concurrency = max_concurrency;
+
+        self
+    }
+}
+
+
 
 impl TaxicabBuilder {
     ///Creates a new `TaxicabBuilder` with specifying the socket address of the taxicab server
@@ -166,11 +199,8 @@ impl TaxicabBuilder {
     }
 
     ///add a message handler path mapping
-    pub fn with_handler<MH>(mut self, path: MessagePath, handler: MH) -> Self
-    where
-        MH: DynamicMessageHandler + 'static,
-    {
-        self.handlers.insert(path, Box::new(handler));
+    pub fn with_handler(mut self, path: MessagePath, handler: TaxicabHandlerProfile) -> Self {
+        self.handlers.insert(path, handler);
 
         self
     }
@@ -269,7 +299,7 @@ impl TaxicabCommandHandler {
                 tokio::spawn(async move {
                     tokio::select! {
                         Ok(_) = db.handler_registry.get(&self.command.path)
-                            .map(|handler| handler.handle(taxicab,data,private::Token{}))
+                            .map(|handler| handler.handler.handle(taxicab,data,private::Token{}))
                             .expect("The message handler is not existing or not registered")=> {
 
                             info!(message_id = message_id.to_string(), "message processed successfully and the acknowledge has sent to the taxicab server");
