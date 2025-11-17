@@ -2,7 +2,10 @@ use std::{error::Error, net::SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use taxicab::{MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient, TaxicabHandlerProfile};
+use taxicab::{
+    MessageHandler, MessageHandlerAdapter, MessagePath, TaxicabBuilder, TaxicabClient,
+    TaxicabHandlerProfile,
+};
 use tokio::signal::ctrl_c;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;

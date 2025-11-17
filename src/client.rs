@@ -140,34 +140,34 @@ pub struct TaxicabBuilder {
 ///
 ///It holds the information about the handlers and their configurations such as max concurrency
 ///level in the current taxicab client
-pub struct TaxicabHandlerProfile{
+pub struct TaxicabHandlerProfile {
     handler: Box<dyn DynamicMessageHandler>,
     max_concurrency: u16,
 }
 
-impl TaxicabHandlerProfile{
+impl TaxicabHandlerProfile {
     ///Creates a new `TaxicabHanlderProfile` with a given handler
     ///
     ///This method will set the `max concurrency level` of this handler to `1` , meaning only one
     ///message will be fed to this handler at a time. For chanching this configuration you might use
     ///`with_max_concurrency` method.
-    pub fn new<MH>(handler:MH) -> Self
-        where MH: DynamicMessageHandler + 'static{
-            Self{
-                handler:Box::new(handler),
-                max_concurrency:1,
-            }
+    pub fn new<MH>(handler: MH) -> Self
+    where
+        MH: DynamicMessageHandler + 'static,
+    {
+        Self {
+            handler: Box::new(handler),
+            max_concurrency: 1,
+        }
     }
 
     ///Sets the max concurrency level of the taxcab message handler.
-    pub fn with_max_concurreny(mut self, max_concurrency:u16) -> Self{
+    pub fn with_max_concurreny(mut self, max_concurrency: u16) -> Self {
         self.max_concurrency = max_concurrency;
 
         self
     }
 }
-
-
 
 impl TaxicabBuilder {
     ///Creates a new `TaxicabBuilder` with specifying the socket address of the taxicab server
@@ -339,8 +339,8 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
     async fn run<C>(
         &mut self,
         taxicab: Arc<TaxicabClient>,
-        cancel: C,
-        shutdown_complete: UnboundedSender<()>,
+        _: C,
+        _: UnboundedSender<()>,
     ) -> Result<(), Box<dyn Error + Send>>
     where
         C: Fn() -> Receiver<ShutdownData> + Sync + Send,
@@ -349,14 +349,11 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
             while let Some(message) = receiver.recv().await {
                 match message {
                     Message::Request(message) => {
-                        TaxicabCommandHandler::new(
-                            taxicab.clone(),
-                            message,
-                            cancel(),
-                            shutdown_complete.clone(),
-                        )
-                        .run()
-                        .await?
+                        let _ = taxicab
+                            .db
+                            .message_channels
+                            .get(&message.path)
+                            .map(|tx| tx.send(message));
                     }
                     Message::Cancellation(message_id) => {
                         let mut cancellation_signals =
@@ -383,13 +380,18 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
 struct Db {
     handler_registry: Arc<MessageHandlerRegistry>,
     process_cancellations: Arc<Mutex<HashMap<MessageId, Sender<bool>>>>,
+    message_channels: Arc<HashMap<MessagePath, UnboundedSender<CommandMessage>>>,
 }
 
 impl Db {
-    fn new(registry: MessageHandlerRegistry) -> Self {
+    fn new(
+        registry: MessageHandlerRegistry,
+        message_channels: HashMap<MessagePath, UnboundedSender<CommandMessage>>,
+    ) -> Self {
         Self {
             handler_registry: Arc::new(registry),
             process_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            message_channels: Arc::new(message_channels),
         }
     }
 }
@@ -475,13 +477,30 @@ impl TaxicabBuilder {
         let (tx, rx) = TaxicabTransport::connect(self.address, tx_shutdown.subscribe()).await?;
 
         Self::send_exchange_bindings_to_server(self.handlers.keys(), tx.clone());
+        let mut message_channels = HashMap::new();
+        let mut message_channel_receivers = Vec::new();
+        for path in self.handlers.keys() {
+            let (tx, rx) = mpsc::unbounded_channel::<CommandMessage>();
+
+            message_channels.insert(path.clone(), tx);
+            message_channel_receivers.push(rx);
+        }
+
         let client: Arc<TaxicabClient> = Arc::new(TaxicabClient {
-            db: Db::new(self.handlers),
+            db: Db::new(self.handlers, message_channels),
             sender: Some(tx),
         });
 
         let (tx_shutdown_complete, mut rx_shutdown_complete) =
             tokio::sync::mpsc::unbounded_channel::<()>();
+
+        let receivers_shutdown = tx_shutdown.clone();
+        host_message_receivers(
+            message_channel_receivers,
+            client.clone(),
+            move || receivers_shutdown.clone().subscribe(),
+            tx_shutdown_complete.clone(),
+        );
 
         let mut tasks = Vec::new();
 
@@ -545,6 +564,33 @@ impl TaxicabBuilder {
                 let _ = command_sender.send(Message::Binding(bindings.exchange.to_string()));
             }
         }
+    }
+}
+fn host_message_receivers<C>(
+    message_channel_receivers: Vec<UnboundedReceiver<CommandMessage>>,
+    taxicab: Arc<TaxicabClient>,
+    cancel: C,
+    shutdown_complete: UnboundedSender<()>,
+) where
+    C: Fn() -> Receiver<ShutdownData> + Send + Sync + 'static + Clone,
+{
+    for mut receiver in message_channel_receivers.into_iter() {
+        let taxicab = taxicab.clone();
+        let shutdown_complete = shutdown_complete.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            while let Some(message) = receiver.recv().await {
+                let _ = TaxicabCommandHandler::new(
+                    taxicab.clone(),
+                    message,
+                    cancel(),
+                    shutdown_complete.clone(),
+                )
+                .run()
+                .await;
+            }
+        });
+        //TODO: spawn a processor for the current rx
     }
 }
 
