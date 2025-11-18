@@ -9,7 +9,7 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::info;
+use tracing::{debug, error, info};
 
 ///The taxicab server state.
 #[derive(Debug)]
@@ -51,16 +51,32 @@ impl Taxicab {
         if let Ok(_) = controller.new_client(addr.to_string(), tx) {
             loop {
                 tokio::select! {
-                   Some(Ok(bytes))= framed_socket.next() => {
-
-                        if let Ok(_) = controller.message_received(
-                            bytes.to_vec(),
-                            addr.to_string(),
-                        ) {}
+                   Some(result)= framed_socket.next() => {
+                        match result {
+                            Ok(bytes) => {
+                                if let Ok(_) = controller.message_received(
+                                    bytes.to_vec(),
+                                    addr.to_string(),
+                                ) {}
+                            }
+                            Err(err) => {
+                                error!(error = format!("{:#?}", err), "and error occurred to th framed socket");
+                            }
+                        }
                     }
 
                     Some(message) = rx.recv() => {
-                        let _ = framed_socket.send(message.to_bytes().into()).await;
+                        match framed_socket.send(message.to_bytes().into()).await {
+                            Ok(_)=>{},
+                            Err(error)=>{
+                                error!(error = format!("{:#?}", error), "and error occurred to th framed socket sending a message to the client");
+                            }
+                        }
+                    }
+
+                    else => {
+                        debug!("Framed socket's all branches are disabled. No more sending or receiving to this socket going to happened. Exiting the socket listener process...");
+                        break;
                     }
                 };
             }

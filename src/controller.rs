@@ -115,6 +115,13 @@ impl Controller {
                 Message::Request(message) => {
                     db.enqueue(message);
                 }
+                Message::Disconnect(addr) => {
+                    debug!(
+                        endpoint = addr,
+                        "A Disconnect signal received from an endpoint"
+                    );
+                    db.unbind_client(addr);
+                }
                 _ => {}
             },
             Err(_e) => {

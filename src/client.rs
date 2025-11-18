@@ -434,9 +434,11 @@ impl TaxicabTransport {
     async fn connect(
         addr: SocketAddr,
         mut shutdown: Receiver<ShutdownData>,
-    ) -> anyhow::Result<(UnboundedSender<Message>, UnboundedReceiver<Message>)> {
+    ) -> anyhow::Result<(UnboundedSender<Message>, UnboundedReceiver<Message>, String)> {
         //initilize a TcpStream connected to the taxicab server
         let stream = TcpStream::connect(addr).await?;
+
+        let local_address = stream.local_addr().map(|addr| addr.to_string())?;
 
         //Create a Framed I/O read/write stream to read/write the raw data in a `Message` chunck.
         let mut transport = Framed::new(stream, LengthDelimitedCodec::new());
@@ -474,6 +476,9 @@ impl TaxicabTransport {
 
                     //wait to receive a new message to be sent to the taxicab server
                     Some(message) = rx_sender.recv() => {
+                        if let Message::Disconnect(addr) = &message{
+                            debug!(Endpoint = addr, "transport received the disconnect signal");
+                        }
                         if let Err(e) = transport.send(message.to_bytes().into()).await {
                                 error!(Error = format!("{:#?}", e), "Failed to send a message to the server.");
                             }
@@ -487,7 +492,7 @@ impl TaxicabTransport {
             }
         });
 
-        Ok((tx_sender, rx_receiver))
+        Ok((tx_sender, rx_receiver, local_address))
     }
 }
 
@@ -506,7 +511,8 @@ impl TaxicabBuilder {
 
         //TODO: the connect should get a closure for receiving a message and return the Self to be
         //kept in the taxicab client object
-        let (tx, rx) = TaxicabTransport::connect(self.address, tx_shutdown.subscribe()).await?;
+        let (tx, rx, local_address) =
+            TaxicabTransport::connect(self.address, tx_shutdown.subscribe()).await?;
 
         Self::send_exchange_bindings_to_server(self.handlers.keys(), tx.clone());
         let mut message_channels = HashMap::new();
@@ -559,6 +565,17 @@ impl TaxicabBuilder {
         _ = shutdown => {
         warn!("the shutdown signal is received");
         }
+        }
+
+        if let Some(sender) = client.sender.clone() {
+            debug!(
+                endpoint = self.address.to_string(),
+                "send the disconnect signal to the transport component"
+            );
+            //Sent the disconnect signal to the server
+            let _ = sender.send(Message::Disconnect(local_address));
+
+            //tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
         //let taxicab_remote = client.clone();
 

@@ -9,7 +9,7 @@ use tokio::sync::{
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use tokio::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     Message,
@@ -130,6 +130,24 @@ impl State {
             result
         } else {
             None
+        }
+    }
+
+    fn unbind_endpoint<Cs>(&mut self, endpoint: Cs)
+    where
+        Cs: AsRef<str>,
+    {
+        if let Some(_) = self.endpoints.remove(endpoint.as_ref()) {
+            warn!(endpoint = endpoint.as_ref(), "Endpoint is unbound now");
+        }
+        for (exchange, endpoints) in self.bindings.iter_mut() {
+            if endpoints.remove(endpoint.as_ref()) {
+                warn!(
+                    endpoint = endpoint.as_ref(),
+                    exchange = exchange,
+                    "Endpoint stopped listening to the exchange"
+                );
+            }
         }
     }
 
@@ -364,6 +382,15 @@ impl Db {
         }
 
         Ok(())
+    }
+
+    pub fn unbind_client<Cs>(&mut self, endpoint: Cs)
+    where
+        Cs: AsRef<str>,
+    {
+        let mut state = self.shared.state.lock().unwrap();
+
+        state.unbind_endpoint(endpoint);
     }
 
     pub fn bind<Xs, Cs>(&mut self, exchange: Xs, endpoint: Cs)

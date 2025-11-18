@@ -23,6 +23,12 @@ pub enum Message {
     ///messages of this exchange to handle them, you can count on me`
     Binding(String),
 
+    /// Client disconnection message
+    ///
+    /// A Disconnect message will be sent by the client to let the server knows about its current
+    /// shutdown process. So server wont sent the client any more message as a consumer
+    Disconnect(String),
+
     ///Request/Command
     ///
     ///A request or a command is a kind of message client sending to server to be forwarded to a
