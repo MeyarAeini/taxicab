@@ -402,7 +402,7 @@ impl Shared {
             ..
         } = &mut *self.state.lock().unwrap();
 
-        let due = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        let due = Instant::now().checked_sub(Duration::from_secs(15)).unwrap();
 
         while let Some(&(when, ref message_id)) = wip.iter().next() {
             if when > due {

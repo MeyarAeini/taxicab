@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpStream,
     sync::{
-        Mutex,
+        Mutex, OwnedSemaphorePermit, Semaphore,
         broadcast::Receiver,
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         watch::{self, Sender},
@@ -18,7 +18,7 @@ use crate::{
     Message,
     message::{CommandMessage, MessageId, MessagePath},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -263,6 +263,7 @@ struct TaxicabCommandHandler {
     //A mscp sender to be droped after everything done to let the receive now that everything is
     //done
     _shutdown_complete: UnboundedSender<()>,
+    permit: OwnedSemaphorePermit,
 }
 
 impl TaxicabCommandHandler {
@@ -271,12 +272,14 @@ impl TaxicabCommandHandler {
         command: CommandMessage,
         cancel: Receiver<ShutdownData>,
         shutdown_complete: UnboundedSender<()>,
+        permit: OwnedSemaphorePermit,
     ) -> Self {
         Self {
             taxicab,
             command,
             cancel,
             _shutdown_complete: shutdown_complete,
+            permit,
         }
     }
 
@@ -313,6 +316,7 @@ impl TaxicabCommandHandler {
                             info!(message_id = message_id.to_string() ,"Received the shutdown signal, discarding all processes");
                         }
                     }
+                    drop(self.permit);
                 });
             }
             Err(e) => {
@@ -479,11 +483,11 @@ impl TaxicabBuilder {
         Self::send_exchange_bindings_to_server(self.handlers.keys(), tx.clone());
         let mut message_channels = HashMap::new();
         let mut message_channel_receivers = Vec::new();
-        for path in self.handlers.keys() {
+        for (path, value) in self.handlers.iter() {
             let (tx, rx) = mpsc::unbounded_channel::<CommandMessage>();
 
             message_channels.insert(path.clone(), tx);
-            message_channel_receivers.push(rx);
+            message_channel_receivers.push((rx, value.max_concurrency as usize));
         }
 
         let client: Arc<TaxicabClient> = Arc::new(TaxicabClient {
@@ -567,27 +571,58 @@ impl TaxicabBuilder {
     }
 }
 fn host_message_receivers<C>(
-    message_channel_receivers: Vec<UnboundedReceiver<CommandMessage>>,
+    message_channel_receivers: Vec<(UnboundedReceiver<CommandMessage>, usize)>,
     taxicab: Arc<TaxicabClient>,
     cancel: C,
     shutdown_complete: UnboundedSender<()>,
 ) where
     C: Fn() -> Receiver<ShutdownData> + Send + Sync + 'static + Clone,
 {
-    for mut receiver in message_channel_receivers.into_iter() {
+    for (mut receiver, concurrency) in message_channel_receivers.into_iter() {
         let taxicab = taxicab.clone();
         let shutdown_complete = shutdown_complete.clone();
         let cancel = cancel.clone();
+        debug!(
+            capacity = concurrency,
+            "creating a semaphore with maximum capacity of"
+        );
+        let semaphore = Arc::new(Semaphore::new(concurrency));
         tokio::spawn(async move {
-            while let Some(message) = receiver.recv().await {
-                let _ = TaxicabCommandHandler::new(
-                    taxicab.clone(),
-                    message,
-                    cancel(),
-                    shutdown_complete.clone(),
-                )
-                .run()
-                .await;
+            loop {
+                let mut shutdown = cancel();
+                tokio::select! {
+                    Ok(permit) = semaphore.clone().acquire_owned() => {
+
+                    tokio::select! {
+                        Some(message) = receiver.recv() => {
+
+                        debug!(
+                            capacity = semaphore.available_permits(),
+                        "available capacity"
+                        );
+
+                        let _ = TaxicabCommandHandler::new(
+                            taxicab.clone(),
+                            message,
+                            cancel(),
+                            shutdown_complete.clone(),
+                            permit,
+                        )
+                        .run()
+                        .await;
+
+                    }
+                        _ = shutdown.recv() => {
+                                warn!("the message receiver received the shutdown signal");
+                                break;
+                            }
+                    }
+                }
+                    _=shutdown.recv() => {
+                        warn!("the message receiver received the shutdown signal");
+                        break;
+                    }
+                }
             }
         });
         //TODO: spawn a processor for the current rx
