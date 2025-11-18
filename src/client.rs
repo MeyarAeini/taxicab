@@ -353,18 +353,44 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
             while let Some(message) = receiver.recv().await {
                 match message {
                     Message::Request(message) => {
-                        let _ = taxicab
+                        //only dispatch the message if it is not already ignored
+                        if !taxicab
                             .db
-                            .message_channels
-                            .get(&message.path)
-                            .map(|tx| tx.send(message));
+                            .messages_to_be_ignored
+                            .lock()
+                            .await
+                            .remove(message.id())
+                        {
+                            let _ = taxicab
+                                .db
+                                .message_channels
+                                .get(&message.path)
+                                .map(|tx| tx.send(message));
+                        }
                     }
                     Message::Cancellation(message_id) => {
                         let mut cancellation_signals =
                             taxicab.db.process_cancellations.lock().await;
-                        cancellation_signals
-                            .remove(&message_id)
-                            .map(|signal| signal.send(true));
+                        match cancellation_signals.remove(&message_id) {
+                            Some(signal) => {
+                                let _ = signal.send(true).map_err(|err| {
+                                    error!(
+                                        error = format!("{:#?}", err),
+                                        "the message cancellation signal failed to be sent"
+                                    )
+                                });
+                            }
+                            None => {
+                                //mark the message_id as ignored for preventing the client
+                                //processing the message in future
+                                taxicab
+                                    .db
+                                    .messages_to_be_ignored
+                                    .lock()
+                                    .await
+                                    .insert(message_id.clone());
+                            }
+                        }
                         info!(
                             message_id = message_id.to_string(),
                             "the message processing should be canceled. the cancelation signal is sent."
@@ -384,6 +410,7 @@ impl TaxicabTask for TaxicabMessageReceiverTask {
 struct Db {
     handler_registry: Arc<MessageHandlerRegistry>,
     process_cancellations: Arc<Mutex<HashMap<MessageId, Sender<bool>>>>,
+    messages_to_be_ignored: Arc<Mutex<HashSet<MessageId>>>,
     message_channels: Arc<HashMap<MessagePath, UnboundedSender<CommandMessage>>>,
 }
 
@@ -395,6 +422,7 @@ impl Db {
         Self {
             handler_registry: Arc::new(registry),
             process_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            messages_to_be_ignored: Arc::new(Mutex::new(HashSet::new())),
             message_channels: Arc::new(message_channels),
         }
     }
@@ -593,31 +621,38 @@ fn host_message_receivers<C>(
                 tokio::select! {
                     Ok(permit) = semaphore.clone().acquire_owned() => {
 
-                    tokio::select! {
-                        Some(message) = receiver.recv() => {
+                        tokio::select! {
+                            Some(message) = receiver.recv() => {
 
-                        debug!(
-                            capacity = semaphore.available_permits(),
-                        "available capacity"
-                        );
+                                debug!(
+                                    capacity = semaphore.available_permits(),
+                                "available capacity"
+                                );
 
-                        let _ = TaxicabCommandHandler::new(
-                            taxicab.clone(),
-                            message,
-                            cancel(),
-                            shutdown_complete.clone(),
-                            permit,
-                        )
-                        .run()
-                        .await;
 
-                    }
-                        _ = shutdown.recv() => {
-                                warn!("the message receiver received the shutdown signal");
-                                break;
+                                //only continue to process if the message is not in the set of to be ignored
+                                if !taxicab.db.messages_to_be_ignored.lock().await.remove(message.id()) {
+                                    let _ = TaxicabCommandHandler::new(
+                                        taxicab.clone(),
+                                        message,
+                                        cancel(),
+                                        shutdown_complete.clone(),
+                                        permit,
+                                    )
+                                    .run()
+                                    .await;
+                                }
+                                else{
+                                    drop(permit);
+                                }
+
                             }
+                            _ = shutdown.recv() => {
+                                    warn!("the message receiver received the shutdown signal");
+                                    break;
+                            }
+                        }
                     }
-                }
                     _=shutdown.recv() => {
                         warn!("the message receiver received the shutdown signal");
                         break;
